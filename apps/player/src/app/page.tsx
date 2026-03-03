@@ -96,7 +96,7 @@ export default function PlayerHome() {
           occurredAt: new Date().toISOString(),
         });
       } else {
-        setErrorMsg(result.userMessage);
+        setErrorMsg('userMessage' in result ? result.userMessage : 'Falha ao parear dispositivo.');
         setCode('');
       }
     } finally {
@@ -150,7 +150,7 @@ export default function PlayerHome() {
           return;
         }
 
-        setErrorMsg(result.userMessage);
+        setErrorMsg('userMessage' in result ? result.userMessage : 'Falha ao parear dispositivo.');
       } finally {
         if (!cancelled) {
           setIsLoading(false);
@@ -188,7 +188,7 @@ export default function PlayerHome() {
         }
 
         localStorage.removeItem('deviceToken');
-        setErrorMsg(result.userMessage);
+        setErrorMsg('userMessage' in result ? result.userMessage : 'Falha ao reconectar dispositivo.');
       } finally {
         if (!cancelled) {
           setIsLoading(false);
