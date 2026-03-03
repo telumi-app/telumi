@@ -1,0 +1,12 @@
+{
+  "extends": "@telumi/tsconfig/nestjs.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "baseUrl": "./",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": ["src/**/*", "test/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}

@@ -1,0 +1,559 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ─── Multi-tenant root ───────────────────────────────────────────────
+
+model Workspace {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  goalProfile GoalProfile @default(INTERNAL) @map("mode")
+  onboardingStep OnboardingStep @default(WORKSPACE_CREATED) @map("onboarding_step")
+  onboardingCompleted Boolean @default(false) @map("onboarding_completed")
+  timezone  String   @default("America/Sao_Paulo")
+  fallbackPlaylistId String? @map("fallback_playlist_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  users      User[]
+  devices    Device[]
+  locations  Location[]
+  media      Media[]
+  playlists  Playlist[]
+  campaigns  Campaign[]
+  schedules  Schedule[]
+  settings   WorkspaceSettings?
+  scheduleRules      ScheduleRule[]
+  scheduleOccurrences ScheduleOccurrence[]
+  capacityHolds      CapacityHold[]
+
+  @@map("workspaces")
+}
+
+enum GoalProfile {
+  INTERNAL
+  ADS_SALES @map("MARKETPLACE")
+
+  @@map("WorkspaceMode")
+}
+
+enum OnboardingStep {
+  WORKSPACE_CREATED
+  GOAL_SELECTED
+  SETUP_COMPLETED
+  FINISHED
+
+  @@map("OnboardingStep")
+}
+
+enum ScreenCountRange {
+  ONE_TO_TWO
+  THREE_TO_FIVE
+  SIX_TO_TEN
+  TEN_PLUS
+
+  @@map("ScreenCountRange")
+}
+
+enum DeviceOrientation {
+  HORIZONTAL
+  VERTICAL
+}
+
+enum DeviceOperationalStatus {
+  ACTIVE
+  INACTIVE
+}
+
+model WorkspaceSettings {
+  id                     String            @id @default(cuid())
+  workspaceId            String            @unique @map("workspace_id")
+  companyName            String            @map("company_name")
+  city                   String
+  state                  String
+  screenCount            ScreenCountRange  @map("screen_count")
+  wantsToSellImmediately Boolean?          @map("wants_to_sell_immediately")
+  hasCnpj                Boolean?          @map("has_cnpj")
+  cnpj                   String?
+  createdAt              DateTime          @default(now()) @map("created_at")
+  updatedAt              DateTime          @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@map("workspace_settings")
+}
+
+// ─── Users + RBAC ────────────────────────────────────────────────────
+
+enum UserRole {
+  ADMIN
+  OPERATOR
+}
+
+model User {
+  id           String   @id @default(cuid())
+  workspaceId  String   @map("workspace_id")
+  email        String
+  passwordHash String   @map("password_hash")
+  name         String?
+  role         UserRole @default(OPERATOR)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, email])
+  @@index([workspaceId])
+  @@map("users")
+}
+
+// ─── Locations ──────────────────────────────────────────────────────
+
+model Location {
+  id          String   @id @default(cuid())
+  workspaceId String   @map("workspace_id")
+  name        String
+  address     String?
+  city        String?
+  state       String?
+  latitude    Float?
+  longitude   Float?
+  placeId     String?  @map("place_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  devices   Device[]
+
+  @@unique([workspaceId, name])
+  @@index([workspaceId])
+  @@map("locations")
+}
+
+// ─── Devices (TVs) ──────────────────────────────────────────────────
+
+model Device {
+  id               String    @id @default(cuid())
+  workspaceId      String    @map("workspace_id")
+  locationId       String    @map("location_id")
+  name             String
+  orientation      DeviceOrientation @default(HORIZONTAL)
+  resolution       String    @default("AUTO")
+  operationalStatus DeviceOperationalStatus @default(ACTIVE) @map("operational_status")
+  isPublic         Boolean   @default(false) @map("is_public")
+  pairingCode      String?   @unique @map("pairing_code")
+  pairingExpiresAt DateTime? @map("pairing_expires_at")
+  deviceToken      String?   @unique @map("device_token")
+  deviceSecret     String?   @map("device_secret")
+  pairedAt         DateTime? @map("paired_at")
+  lastHeartbeat    DateTime? @map("last_heartbeat")
+
+  // Partner TV fields
+  isPartnerTv              Boolean  @default(false) @map("is_partner_tv")
+  partnerName              String?  @map("partner_name")
+  partnerRevenueSharePct   Float?   @map("partner_revenue_share_pct")
+
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  workspace  Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  location   Location          @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  heartbeats DeviceHeartbeat[]
+  events     DeviceEvent[]
+  playEvents PlayEvent[]
+  scheduleTargets ScheduleTarget[]
+  scheduleOccurrences ScheduleOccurrence[]
+
+  @@unique([workspaceId, name])
+  @@index([workspaceId])
+  @@index([locationId])
+  @@index([pairingCode])
+  @@map("devices")
+}
+
+// ─── Telemetry ──────────────────────────────────────────────────────
+
+model DeviceHeartbeat {
+  id        String   @id @default(cuid())
+  deviceId  String   @map("device_id")
+  timestamp DateTime @default(now())
+  ip        String?
+  userAgent String?  @map("user_agent")
+
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId, timestamp])
+  @@map("device_heartbeats")
+}
+
+// ─── Device Events (Telemetria operacional) ─────────────────────────
+
+enum DeviceEventType {
+  CRASH_LOOP
+  DOWNLOAD_FAILED
+  ASSET_CORRUPTED
+  LOW_STORAGE
+  NO_CONTENT_UPDATE
+  PLAYER_STARTED
+  PLAYER_STOPPED
+  NETWORK_DOWN
+  NETWORK_RESTORED
+
+  @@map("DeviceEventType")
+}
+
+enum DeviceEventSeverity {
+  INFO
+  WARNING
+  CRITICAL
+
+  @@map("DeviceEventSeverity")
+}
+
+model DeviceEvent {
+  id            String              @id @default(cuid())
+  deviceId      String              @map("device_id")
+  eventType     DeviceEventType     @map("event_type")
+  severity      DeviceEventSeverity @default(INFO)
+  message       String?
+  metadata      Json?
+  occurredAt    DateTime            @map("occurred_at")
+  dedupeKey     String?             @map("dedupe_key")
+  createdAt     DateTime            @default(now()) @map("created_at")
+
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId, eventType, occurredAt])
+  @@index([deviceId, dedupeKey])
+  @@map("device_events")
+}
+
+// ─── Play Events (Proof-of-Play) ────────────────────────────────────
+
+enum PlayDeliveryStatus {
+  ONLINE_VERIFIED
+  OFFLINE_SYNCED
+  NOT_ELIGIBLE
+  REJECTED
+
+  @@map("PlayDeliveryStatus")
+}
+
+model PlayEvent {
+  id              String              @id @default(cuid())
+  deviceId        String              @map("device_id")
+  playId          String              @unique @map("play_id")
+  campaignId      String?             @map("campaign_id")
+  assetId         String?             @map("asset_id")
+  startedAt       DateTime            @map("started_at")
+  endedAt         DateTime            @map("ended_at")
+  durationMs      Int                 @map("duration_ms")
+  manifestVersion String?             @map("manifest_version")
+  assetHash       String?             @map("asset_hash")
+  hmacSignature   String?             @map("hmac_signature")
+  deliveryStatus  PlayDeliveryStatus  @default(ONLINE_VERIFIED) @map("delivery_status")
+  syncedAt        DateTime?           @map("synced_at")
+  createdAt       DateTime            @default(now()) @map("created_at")
+
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId, startedAt])
+  @@index([campaignId])
+  @@map("play_events")
+}
+
+// ─── Media (Conteúdos) ──────────────────────────────────────────────
+
+enum MediaType {
+  IMAGE
+  VIDEO
+
+  @@map("MediaType")
+}
+
+enum UploadStatus {
+  PENDING
+  READY
+  FAILED
+
+  @@map("UploadStatus")
+}
+
+model Media {
+  id           String       @id @default(cuid())
+  workspaceId  String       @map("workspace_id")
+  name         String
+  originalName String       @map("original_name")
+  mimeType     String       @map("mime_type")
+  mediaType    MediaType    @map("media_type")
+  fileSize     Int          @map("file_size")
+  durationMs   Int?         @map("duration_ms")
+  width        Int?
+  height       Int?
+  storageKey   String       @map("storage_key")
+  thumbnailKey String?      @map("thumbnail_key")
+  hash         String?
+  uploadStatus UploadStatus @default(PENDING) @map("upload_status")
+  createdAt    DateTime     @default(now()) @map("created_at")
+  updatedAt    DateTime     @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  playlistItems  PlaylistItem[]
+  campaignAssets CampaignAsset[]
+
+  @@index([workspaceId])
+  @@index([workspaceId, mediaType])
+  @@index([workspaceId, uploadStatus])
+  @@map("media")
+}
+
+// ─── Playlists ──────────────────────────────────────────────────────
+
+model Playlist {
+  id          String   @id @default(cuid())
+  workspaceId String   @map("workspace_id")
+  name        String
+  description String?
+  totalDurationMs Int  @default(0) @map("total_duration_ms")
+  itemCount   Int      @default(0) @map("item_count")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  items     PlaylistItem[]
+  schedules Schedule[]
+
+  @@unique([workspaceId, name])
+  @@index([workspaceId])
+  @@map("playlists")
+}
+
+model PlaylistItem {
+  id         String   @id @default(cuid())
+  playlistId String   @map("playlist_id")
+  mediaId    String   @map("media_id")
+  position   Int      @default(0)
+  durationMs Int      @default(15000) @map("duration_ms")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  playlist Playlist @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+  media    Media    @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  @@index([playlistId, position])
+  @@index([mediaId])
+  @@map("playlist_items")
+}
+
+// ─── Campaigns (Campanhas) ──────────────────────────────────────────
+
+enum CampaignStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  FINISHED
+  CANCELLED
+
+  @@map("CampaignStatus")
+}
+
+model Campaign {
+  id          String         @id @default(cuid())
+  workspaceId String         @map("workspace_id")
+  name        String
+  objective   String?
+  description String?
+  status      CampaignStatus @default(DRAFT)
+  startDate   DateTime?      @map("start_date")
+  endDate     DateTime?      @map("end_date")
+  timelineDurationSnapshotSeconds Int? @map("timeline_duration_snapshot_seconds")
+  timelineHash String?        @map("timeline_hash")
+  createdAt   DateTime       @default(now()) @map("created_at")
+  updatedAt   DateTime       @updatedAt @map("updated_at")
+
+  workspace Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  assets    CampaignAsset[]
+  schedules Schedule[]
+  scheduleRules      ScheduleRule[]
+  scheduleOccurrences ScheduleOccurrence[]
+  capacityHolds      CapacityHold[]
+
+  @@index([workspaceId])
+  @@index([workspaceId, status])
+  @@map("campaigns")
+}
+
+model CampaignAsset {
+  id          String   @id @default(cuid())
+  campaignId  String   @map("campaign_id")
+  mediaId     String   @map("media_id")
+  position    Int      @default(0)
+  durationMs  Int      @default(15000) @map("duration_ms")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  media    Media    @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId, position])
+  @@index([mediaId])
+  @@map("campaign_assets")
+}
+
+// ─── Schedules (Programação) ────────────────────────────────────────
+
+enum ScheduleStatus {
+  DRAFT
+  PUBLISHED
+  PAUSED
+  FINISHED
+
+  @@map("ScheduleStatus")
+}
+
+enum ScheduleSourceType {
+  PLAYLIST
+  CAMPAIGN
+
+  @@map("ScheduleSourceType")
+}
+
+model Schedule {
+  id           String             @id @default(cuid())
+  workspaceId  String             @map("workspace_id")
+  name         String
+  sourceType   ScheduleSourceType @map("source_type")
+  playlistId   String?            @map("playlist_id")
+  campaignId   String?            @map("campaign_id")
+  status       ScheduleStatus     @default(DRAFT)
+  startDate    DateTime           @map("start_date")
+  endDate      DateTime?          @map("end_date")
+  startTime    String             @map("start_time")
+  endTime      String             @map("end_time")
+  frequencyPerHour Int            @default(4) @map("frequency_per_hour")
+  daysOfWeek   Int[]              @map("days_of_week")
+  priority     Int                @default(0)
+  createdAt    DateTime           @default(now()) @map("created_at")
+  updatedAt    DateTime           @updatedAt @map("updated_at")
+
+  workspace Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  playlist  Playlist?        @relation(fields: [playlistId], references: [id], onDelete: SetNull)
+  campaign  Campaign?        @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  targets   ScheduleTarget[]
+
+  @@index([workspaceId])
+  @@index([workspaceId, status])
+  @@index([playlistId])
+  @@index([campaignId])
+  @@map("schedules")
+}
+
+model ScheduleTarget {
+  id         String   @id @default(cuid())
+  scheduleId String   @map("schedule_id")
+  deviceId   String   @map("device_id")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  schedule Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  device   Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@unique([scheduleId, deviceId])
+  @@index([deviceId])
+  @@map("schedule_targets")
+}
+
+// ─── Schedule Rules (intenção do usuário) ───────────────────────────
+
+model ScheduleRule {
+  id            String   @id @default(cuid())
+  workspaceId   String   @map("workspace_id")
+  campaignId    String   @map("campaign_id")
+  timezone      String   @default("America/Sao_Paulo")
+  dateStart     DateTime @map("date_start")
+  dateEnd       DateTime @map("date_end")
+  daysOfWeek    Int[]    @map("days_of_week")
+  windows       Json     @default("[]") // Array<{startTime: string, endTime: string}>
+  playsPerHour  Int      @map("plays_per_hour")
+  screenIds     String[] @map("screen_ids") // IDs de devices selecionados
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  campaign  Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  occurrences ScheduleOccurrence[]
+
+  @@index([workspaceId])
+  @@index([campaignId])
+  @@map("schedule_rules")
+}
+
+// ─── Schedule Occurrences (instâncias materializadas em UTC) ────────
+
+enum ScheduleOccurrenceStatus {
+  ACTIVE
+  PAUSED
+
+  @@map("ScheduleOccurrenceStatus")
+}
+
+model ScheduleOccurrence {
+  id                              String   @id @default(cuid())
+  workspaceId                     String   @map("workspace_id")
+  campaignId                      String   @map("campaign_id")
+  screenId                        String   @map("screen_id")
+  sourceRuleId                    String   @map("source_rule_id")
+  startAtUtc                      DateTime @map("start_at_utc")
+  endAtUtc                        DateTime @map("end_at_utc")
+  playsPerHour                    Int      @map("plays_per_hour")
+  rate                            Float
+  timelineDurationSnapshotSeconds Int      @map("timeline_duration_snapshot_seconds")
+  status                          ScheduleOccurrenceStatus @default(ACTIVE)
+  createdAt                       DateTime @default(now()) @map("created_at")
+
+  workspace  Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  campaign   Campaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  screen     Device       @relation(fields: [screenId], references: [id], onDelete: Cascade)
+  sourceRule ScheduleRule @relation(fields: [sourceRuleId], references: [id], onDelete: Cascade)
+
+  @@index([screenId, startAtUtc])
+  @@index([screenId, endAtUtc])
+  @@index([campaignId])
+  @@index([workspaceId])
+  @@map("schedule_occurrences")
+}
+
+// ─── Capacity Holds (reserva temporária) ────────────────────────────
+
+enum CapacityHoldStatus {
+  ACTIVE
+  CONSUMED
+  EXPIRED
+
+  @@map("CapacityHoldStatus")
+}
+
+model CapacityHold {
+  id             String            @id @default(cuid())
+  workspaceId    String            @map("workspace_id")
+  campaignId     String            @map("campaign_id")
+  payloadHash    String            @map("payload_hash")
+  expiresAt      DateTime          @map("expires_at")
+  occurrencesJson Json             @map("occurrences_json") // PlannedOccurrence[]
+  status         CapacityHoldStatus @default(ACTIVE)
+  idempotencyKey String?           @unique @map("idempotency_key")
+  createdAt      DateTime          @default(now()) @map("created_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  campaign  Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, expiresAt])
+  @@index([campaignId, status])
+  @@map("capacity_holds")
+}
+

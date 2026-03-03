@@ -1,0 +1,34 @@
+{
+  "name": "telumi",
+  "private": true,
+  "packageManager": "pnpm@9.15.4",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "pnpm": {
+    "overrides": {}
+  },
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md}\"",
+    "db:migrate": "pnpm --filter @telumi/db migrate:dev",
+    "db:seed": "pnpm --filter @telumi/db seed",
+    "db:studio": "pnpm --filter @telumi/db studio",
+    "db:generate": "pnpm --filter @telumi/db generate",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "turbo": "^2.1.0",
+    "husky": "^9.1.0",
+    "lint-staged": "^15.2.0",
+    "@commitlint/cli": "^19.3.0",
+    "@commitlint/config-conventional": "^19.2.0",
+    "prettier": "^3.3.0",
+    "typescript": "^5.5.0"
+  }
+}

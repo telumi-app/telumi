@@ -1,0 +1,16 @@
+{
+  "name": "@telumi/eslint-config",
+  "version": "0.0.0",
+  "private": true,
+  "files": ["base.js", "nestjs.js", "nextjs.js"],
+  "dependencies": {
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint-config-prettier": "^10.0.0",
+    "eslint-plugin-import": "^2.29.0"
+  },
+  "peerDependencies": {
+    "eslint": "^8.57.0 || ^9.0.0",
+    "typescript": "^5.0.0"
+  }
+}
