@@ -140,7 +140,7 @@ export class DevicesService {
   }
 
   private getPlayerBaseUrl() {
-    return (process.env.PLAYER_RECOVERY_URL ?? process.env.PLAYER_URL ?? 'http://localhost:3002')
+    return (process.env.PLAYER_RECOVERY_URL ?? process.env.PLAYER_URL ?? 'https://player.telumi.com.br')
       .replace(/\/$/, '');
   }
 
