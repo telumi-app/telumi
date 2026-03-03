@@ -5,12 +5,12 @@ Marketplace de mídia indoor + operação de player para redes de TVs e telões.
 ## Stack
 
 | Camada | Tecnologia |
-|--------|-----------|
+| ------ | ---------- |
 | Monorepo | Turborepo + pnpm + TypeScript |
 | Backend | NestJS (REST) + Prisma + PostgreSQL |
 | Cache/Fila | Redis 7 (BullMQ futuro) |
-| Admin Web | Next.js 14 (App Router) + Tailwind + shadcn/ui |
-| Player | Next.js 14 (app separado) |
+| Admin Web | Next.js 16 (App Router) + Tailwind + shadcn/ui |
+| Player | Next.js 16 (app separado) |
 | Infra local | Docker Compose (Postgres + Redis) |
 | Qualidade | ESLint + Prettier + Husky + lint-staged + commitlint |
 | Auth | JWT + RBAC (role enum) |
@@ -18,7 +18,7 @@ Marketplace de mídia indoor + operação de player para redes de TVs e telões.
 
 ## Estrutura
 
-```
+```text
 telumi/
 ├── apps/
 │   ├── api/              # NestJS REST API
@@ -67,7 +67,7 @@ pnpm dev
 ## Scripts principais
 
 | Comando | Descrição |
-|---------|-----------|
+| ------- | --------- |
 | `pnpm dev` | Inicia API + Admin + Player em paralelo |
 | `pnpm build` | Build de todos os apps/packages |
 | `pnpm lint` | Lint em todo o monorepo |
@@ -76,6 +76,22 @@ pnpm dev
 | `pnpm db:migrate` | Aplica migrações Prisma |
 | `pnpm db:seed` | Seed do banco |
 | `pnpm db:studio` | Abre Prisma Studio |
+
+## Produção (Vercel + CI)
+
+- Guia de deploy: [docs/deploy/vercel-production.md](docs/deploy/vercel-production.md)
+- Branch de produção: `main`
+- Deploy automático: a cada commit em `main`
+- CI obrigatório: workflow em [.github/workflows/ci.yml](.github/workflows/ci.yml)
+
+### Resumo rápido
+
+1. Hospede a API (`apps/api`) em provedor backend (fora do Vercel).
+2. Crie 2 projetos no Vercel apontando para:
+   - `apps/admin-web`
+   - `apps/player`
+3. Configure `NEXT_PUBLIC_API_URL` em ambos os projetos.
+4. Faça merge em `main` para publicar automaticamente.
 
 ## Convenções
 
