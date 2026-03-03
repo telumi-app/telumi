@@ -1,6 +1,10 @@
 'use client';
 
 import * as React from 'react';
+
+const PLAYER_BASE_URL = (
+  process.env.NEXT_PUBLIC_PLAYER_URL || 'https://player.telumi.com.br'
+).replace(/\/$/, '');
 import { HugeiconsIcon } from '@hugeicons/react';
 import { ArrowRightBigIcon, ArrowLeftBigIcon, RefreshIcon, ClipboardIcon, TextCheckIcon, PlusSignIcon } from '@hugeicons/core-free-icons';
 import { QRCodeSVG } from 'qrcode.react';
@@ -118,23 +122,6 @@ export function CreateDeviceWizard({
   const [isCreatingLocation, setIsCreatingLocation] = React.useState(false);
   const [isRegeneratingCode, setIsRegeneratingCode] = React.useState(false);
   const [error, setError] = React.useState('');
-  const playerBaseUrl = React.useMemo(() => {
-    const configuredUrl = process.env.NEXT_PUBLIC_PLAYER_URL?.trim();
-
-    if (configuredUrl) {
-      return configuredUrl.replace(/\/$/, '');
-    }
-
-    if (
-      typeof window !== 'undefined'
-      && window.location.hostname !== 'localhost'
-      && window.location.hostname !== '127.0.0.1'
-    ) {
-      return 'https://telumiplayer-production.up.railway.app';
-    }
-
-    return 'http://localhost:3002';
-  }, []);
   const [createdDevice, setCreatedDevice] = React.useState<Device | null>(null);
   const [copied, setCopied] = React.useState(false);
 
@@ -841,7 +828,7 @@ export function CreateDeviceWizard({
               {createdDevice.pairingCode && (
                 <div className="mx-auto rounded-lg border bg-background p-2 sm:mx-0">
                   <QRCodeSVG
-                    value={`${playerBaseUrl}/?pairCode=${createdDevice.pairingCode}`}
+                    value={`${PLAYER_BASE_URL}/?pairCode=${createdDevice.pairingCode}`}
                     size={112}
                     marginSize={1}
                     level="M"
