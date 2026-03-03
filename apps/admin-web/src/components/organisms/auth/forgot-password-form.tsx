@@ -43,7 +43,7 @@ export function ForgotPasswordForm() {
   async function onSubmit(values: ForgotPasswordFormData) {
     setFeedbackMessage(null);
     try {
-      const response = await authApi.forgotPassword(values);
+      const response = await authApi.forgotPassword({ email: values.email! });
       setFeedbackMessage(response.message ?? SUCCESS_MESSAGE);
       form.reset();
     } catch {
