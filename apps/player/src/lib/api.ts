@@ -1,4 +1,22 @@
-const API_URL = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001') + '/v1';
+function normalizeApiBaseUrl(rawUrl: string): string {
+    const trimmedUrl = rawUrl.trim().replace(/\/$/, '');
+
+    if (!trimmedUrl) {
+        return 'http://localhost:3001';
+    }
+
+    if (trimmedUrl.includes('telumi-api-production.up.railway.app')) {
+        return trimmedUrl.replace(
+            'telumi-api-production.up.railway.app',
+            'telumiapi-production.up.railway.app',
+        );
+    }
+
+    return trimmedUrl;
+}
+
+const API_BASE_URL = normalizeApiBaseUrl(process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001');
+const API_URL = `${API_BASE_URL}/v1`;
 
 export type PairDeviceData = {
     deviceToken: string;
