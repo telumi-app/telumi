@@ -4,6 +4,7 @@ import {
   GetObjectCommand,
   HeadBucketCommand,
   HeadObjectCommand,
+  PutBucketCorsCommand,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
@@ -16,11 +17,16 @@ import { StorageProvider } from './storage.interface';
 @Injectable()
 export class S3StorageProvider implements StorageProvider {
   private readonly client: S3Client;
+  private readonly publicClient: S3Client;
   private readonly bucket: string;
   private readonly logger = new Logger(S3StorageProvider.name);
 
   constructor(private readonly config: ConfigService) {
     const endpoint = this.config.get<string>('STORAGE_ENDPOINT', 'http://localhost:9000');
+    // STORAGE_PUBLIC_ENDPOINT permite que URLs presignadas usem o host público
+    // (acessível pelo browser), separado do endpoint interno usado pela API.
+    // Se não definido, usa o mesmo endpoint.
+    const publicEndpoint = this.config.get<string>('STORAGE_PUBLIC_ENDPOINT', endpoint);
     const region = this.config.get<string>('STORAGE_REGION', 'us-east-1');
     const accessKeyId = this.config.get<string>('STORAGE_ACCESS_KEY', 'minioadmin');
     const secretAccessKey = this.config.get<string>('STORAGE_SECRET_KEY', 'minioadmin');
@@ -36,6 +42,18 @@ export class S3StorageProvider implements StorageProvider {
         secretAccessKey,
       },
     });
+
+    // Client separado para gerar URLs presignadas com o host público.
+    // Garante que o browser consiga fazer PUT diretamente no storage.
+    this.publicClient = new S3Client({
+      endpoint: publicEndpoint,
+      region,
+      forcePathStyle: true,
+      credentials: {
+        accessKeyId,
+        secretAccessKey,
+      },
+    });
   }
 
   async presignedPutUrl(key: string, mimeType: string, expiresInSec: number): Promise<string> {
@@ -45,7 +63,9 @@ export class S3StorageProvider implements StorageProvider {
       ContentType: mimeType,
     });
 
-    return getSignedUrl(this.client, command, { expiresIn: expiresInSec });
+    // Usa publicClient para que a URL gerada aponte para o endpoint público,
+    // acessível pelo browser do usuário.
+    return getSignedUrl(this.publicClient, command, { expiresIn: expiresInSec });
   }
 
   async presignedGetUrl(key: string, expiresInSec: number): Promise<string> {
@@ -54,7 +74,8 @@ export class S3StorageProvider implements StorageProvider {
       Key: key,
     });
 
-    return getSignedUrl(this.client, command, { expiresIn: expiresInSec });
+    // Usa publicClient para que a URL gerada aponte para o endpoint público.
+    return getSignedUrl(this.publicClient, command, { expiresIn: expiresInSec });
   }
 
   async delete(key: string): Promise<void> {
@@ -94,6 +115,30 @@ export class S3StorageProvider implements StorageProvider {
         // Re-throw — caller (StorageModule) handles gracefully
         throw createErr;
       }
+    }
+
+    // Configurar CORS para permitir uploads diretos do browser via presigned PUT.
+    // Sem isso, os navegadores bloqueiam o PUT por política de same-origin.
+    try {
+      await this.client.send(
+        new PutBucketCorsCommand({
+          Bucket: this.bucket,
+          CORSConfiguration: {
+            CORSRules: [
+              {
+                AllowedHeaders: ['*'],
+                AllowedMethods: ['GET', 'PUT', 'POST', 'DELETE', 'HEAD'],
+                AllowedOrigins: ['*'],
+                ExposeHeaders: ['ETag', 'Content-Length'],
+                MaxAgeSeconds: 3600,
+              },
+            ],
+          },
+        }),
+      );
+      this.logger.log(`CORS configured for bucket "${this.bucket}"`);
+    } catch (corsErr: unknown) {
+      this.logger.warn(`Could not configure CORS for bucket "${this.bucket}": ${corsErr instanceof Error ? corsErr.message : String(corsErr)}`);
     }
   }
 }
