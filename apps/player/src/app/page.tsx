@@ -74,7 +74,7 @@ export default function PlayerHome() {
   const [isAutoPairing, setIsAutoPairing] = React.useState(true);
 
   // URL do painel admin — o QR Code aponta para cá
-  const adminUrl = process.env.NEXT_PUBLIC_ADMIN_URL ?? 'http://localhost:3000/telas';
+  const adminUrl = process.env.NEXT_PUBLIC_ADMIN_URL ?? 'https://telumi.com.br/telas';
 
   const handlePair = async () => {
     setErrorMsg('');
