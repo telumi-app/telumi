@@ -12,11 +12,26 @@ function normalizeApiBaseUrl(rawUrl: string): string {
         );
     }
 
+    if (trimmedUrl.endsWith('/v1')) {
+        return trimmedUrl.slice(0, -3);
+    }
+
     return trimmedUrl;
 }
 
 const API_BASE_URL = normalizeApiBaseUrl(process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001');
-const API_URL = `${API_BASE_URL}/v1`;
+const API_URL_CANDIDATES = [`${API_BASE_URL}/v1`, API_BASE_URL];
+
+async function fetchWithApiPrefixFallback(path: string, init: RequestInit): Promise<Response> {
+    const [primaryUrl, fallbackUrl] = API_URL_CANDIDATES;
+    const primaryResponse = await fetch(`${primaryUrl}${path}`, init);
+
+    if (primaryResponse.status !== 404 || primaryUrl === fallbackUrl) {
+        return primaryResponse;
+    }
+
+    return fetch(`${fallbackUrl}${path}`, init);
+}
 
 export class ApiRequestError extends Error {
     constructor(
@@ -100,7 +115,7 @@ export const api = {
         let response: Response;
 
         try {
-            response = await fetch(`${API_URL}/devices/public/pair`, {
+            response = await fetchWithApiPrefixFallback('/devices/public/pair', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ code }),
@@ -139,7 +154,7 @@ export const api = {
         let response: Response;
 
         try {
-            response = await fetch(`${API_URL}/devices/public/pair-by-token`, {
+            response = await fetchWithApiPrefixFallback('/devices/public/pair-by-token', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ token }),
@@ -185,7 +200,7 @@ export const api = {
     },
 
     async sendHeartbeat(payload: HeartbeatPayload): Promise<void> {
-        const response = await fetch(`${API_URL}/devices/public/heartbeat`, {
+        const response = await fetchWithApiPrefixFallback('/devices/public/heartbeat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
@@ -199,7 +214,7 @@ export const api = {
     },
 
     async getManifest(deviceToken: string): Promise<PlaybackManifest> {
-        const response = await fetch(`${API_URL}/devices/public/manifest`, {
+        const response = await fetchWithApiPrefixFallback('/devices/public/manifest', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ deviceToken }),
@@ -231,7 +246,7 @@ export const api = {
         occurredAt: string;
     }): Promise<void> {
         try {
-            await fetch(`${API_URL}/devices/public/telemetry`, {
+            await fetchWithApiPrefixFallback('/devices/public/telemetry', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload),
@@ -254,7 +269,7 @@ export const api = {
         hmacSignature?: string;
     }): Promise<{ success: boolean; deduplicated?: boolean }> {
         try {
-            const response = await fetch(`${API_URL}/devices/public/play-event`, {
+            const response = await fetchWithApiPrefixFallback('/devices/public/play-event', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload),
