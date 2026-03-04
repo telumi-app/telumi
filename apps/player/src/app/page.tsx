@@ -3,6 +3,10 @@
 import * as React from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { api, ApiRequestError } from '@/lib/api';
+import { precacheAssets } from '@/lib/media-cache';
+import { VideoPlayer } from '@/components/video-player';
+import { PlaybackOverlay } from '@/components/playback-overlay';
+import { AssetPrefetch } from '@/components/asset-prefetch';
 
 const HEARTBEAT_QUEUE_KEY = 'telumi:heartbeat-queue';
 const DEVICE_TOKEN_KEY = 'deviceToken';
@@ -52,7 +56,6 @@ export default function PlayerHome() {
   }>>([]);
   const [currentIndex, setCurrentIndex] = React.useState(0);
   const [currentStartedAt, setCurrentStartedAt] = React.useState<string | null>(null);
-  const videoRef = React.useRef<HTMLVideoElement | null>(null);
   const videoFallbackTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const videoCompletedKeyRef = React.useRef<string | null>(null);
   const restoreCurrentTimeRef = React.useRef<number | null>(null);
@@ -316,6 +319,9 @@ export default function PlayerHome() {
         setManifestVersion(manifest.manifestVersion);
         setPlaylistItems(manifest.items);
 
+        // Pre-cache upcoming assets in browser Cache API
+        void precacheAssets(manifest.items.map((item) => item.url));
+
         const persisted = readPlaybackState();
         setCurrentIndex((prev) => {
           if (manifest.items.length === 0) return 0;
@@ -458,7 +464,7 @@ export default function PlayerHome() {
       assetId: currentItem.assetId,
       mediaType: 'VIDEO',
       startedAt,
-      currentTimeSec: videoRef.current?.currentTime ?? 0,
+      currentTimeSec: 0,
       manifestVersion,
       updatedAt: startedAt,
     });
@@ -471,11 +477,15 @@ export default function PlayerHome() {
     if (now - lastProgressPersistAtRef.current < 1000) return;
     lastProgressPersistAtRef.current = now;
 
+    const elapsedSec = currentStartedAt
+      ? Math.max(0, (now - new Date(currentStartedAt).getTime()) / 1000)
+      : 0;
+
     writePlaybackState({
       assetId: currentItem.assetId,
       mediaType: 'VIDEO',
       startedAt: currentStartedAt ?? new Date(now).toISOString(),
-      currentTimeSec: videoRef.current?.currentTime ?? 0,
+      currentTimeSec: elapsedSec,
       manifestVersion,
       updatedAt: new Date(now).toISOString(),
     });
@@ -509,67 +519,6 @@ export default function PlayerHome() {
     };
   }, [paired, currentItem, completeCurrentVideo]);
 
-  React.useEffect(() => {
-    if (!currentItem || currentItem.mediaType !== 'VIDEO') return;
-    const video = videoRef.current;
-    if (!video) return;
-
-    const tryStartPlayback = () => {
-      const result = video.play();
-      if (result && typeof result.then === 'function') {
-        void result.catch(() => {
-          setTimeout(() => {
-            const retry = video.play();
-            if (retry && typeof retry.then === 'function') {
-              void retry.catch(() => {
-                // mantém fallback de término para seguir playlist
-              });
-            }
-          }, 300);
-        });
-      }
-    };
-
-    const onLoadedMetadata = () => {
-      if (restoreCurrentTimeRef.current != null) {
-        try {
-          video.currentTime = restoreCurrentTimeRef.current;
-        } catch {
-          // ignore seek errors
-        }
-        restoreCurrentTimeRef.current = null;
-      }
-      tryStartPlayback();
-    };
-
-    const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && video.paused) {
-        tryStartPlayback();
-      }
-    };
-
-    const onWaiting = () => {
-      // tentativa de recuperação em stalls eventuais
-      if (video.paused) {
-        tryStartPlayback();
-      }
-    };
-
-    video.addEventListener('loadedmetadata', onLoadedMetadata);
-    video.addEventListener('canplay', tryStartPlayback);
-    video.addEventListener('waiting', onWaiting);
-    document.addEventListener('visibilitychange', onVisibilityChange);
-
-    tryStartPlayback();
-
-    return () => {
-      video.removeEventListener('loadedmetadata', onLoadedMetadata);
-      video.removeEventListener('canplay', tryStartPlayback);
-      video.removeEventListener('waiting', onWaiting);
-      document.removeEventListener('visibilitychange', onVisibilityChange);
-    };
-  }, [currentItem]);
-
   // ── Tela pós-pareamento ─────────────────────────────────────────────
   if (paired) {
     if (currentItem) {
@@ -582,18 +531,11 @@ export default function PlayerHome() {
               className="h-screen w-screen object-contain"
             />
           ) : (
-            <video
-              ref={videoRef}
-              key={`${currentItem.assetId}-${currentIndex}`}
+            <VideoPlayer
               src={currentItem.url}
-              className="h-screen w-screen object-contain"
-              autoPlay
-              muted
-              playsInline
-              preload="auto"
-              disablePictureInPicture
-              controlsList="nodownload nofullscreen noremoteplayback"
-              loop={false}
+              assetId={currentItem.assetId}
+              index={currentIndex}
+              startAt={restoreCurrentTimeRef.current}
               onPlay={handleVideoStart}
               onTimeUpdate={handleVideoTimeUpdate}
               onEnded={handleVideoEnd}
@@ -601,28 +543,14 @@ export default function PlayerHome() {
             />
           )}
 
-          <div className="pointer-events-none absolute bottom-4 right-4 rounded-md bg-black/55 px-3 py-2 text-xs text-white/80">
-            {currentIndex + 1}/{playlistItems.length} · {currentItem.mediaType === 'VIDEO' ? 'vídeo' : 'imagem'}
-          </div>
+          <PlaybackOverlay
+            currentIndex={currentIndex}
+            totalItems={playlistItems.length}
+            mediaType={currentItem.mediaType}
+          />
 
           {nextItem && (
-            nextItem.mediaType === 'IMAGE' ? (
-              <img
-                src={nextItem.url}
-                alt="Pré-carregamento"
-                className="hidden"
-                loading="eager"
-                decoding="async"
-              />
-            ) : (
-              <video
-                src={nextItem.url}
-                className="hidden"
-                muted
-                playsInline
-                preload="metadata"
-              />
-            )
+            <AssetPrefetch url={nextItem.url} mediaType={nextItem.mediaType} />
           )}
         </main>
       );
