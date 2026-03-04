@@ -75,6 +75,16 @@ export class DevicesService {
     @Optional() @Inject(STORAGE_PROVIDER) private readonly storage?: StorageProvider,
   ) { }
 
+  /**
+   * Convert a UTC Date to the wall-clock Date in São Paulo timezone.
+   * Using `toLocaleString('en-US', { timeZone })` creates a string that
+   * represents local time, then `new Date()` parses it treating it as
+   * local – effectively giving us hours/day in the correct timezone.
+   */
+  private toSaoPaulo(date: Date): Date {
+    return new Date(date.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
+  }
+
   private isScheduleActiveNow(schedule: {
     startDate: Date;
     endDate: Date | null;
@@ -82,12 +92,15 @@ export class DevicesService {
     endTime: string;
     daysOfWeek: number[];
   }) {
-    const now = new Date();
+    const nowUtc = new Date();
+    // All comparisons in São Paulo (America/Sao_Paulo) so that startTime/endTime
+    // values entered by the admin (Brazil local time) are compared correctly.
+    const now = this.toSaoPaulo(nowUtc);
 
-    const startDate = new Date(schedule.startDate);
+    const startDate = this.toSaoPaulo(new Date(schedule.startDate));
     startDate.setHours(0, 0, 0, 0);
 
-    const endDate = schedule.endDate ? new Date(schedule.endDate) : null;
+    const endDate = schedule.endDate ? this.toSaoPaulo(new Date(schedule.endDate)) : null;
     if (endDate) {
       endDate.setHours(23, 59, 59, 999);
     }
