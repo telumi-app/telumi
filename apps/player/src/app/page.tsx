@@ -7,6 +7,7 @@ import { precacheAssets } from '@/lib/media-cache';
 import { VideoPlayer } from '@/components/video-player';
 import { PlaybackOverlay } from '@/components/playback-overlay';
 import { AssetPrefetch } from '@/components/asset-prefetch';
+import { BufferBar } from '@/components/buffer-bar';
 
 const HEARTBEAT_QUEUE_KEY = 'telumi:heartbeat-queue';
 const DEVICE_TOKEN_KEY = 'deviceToken';
@@ -60,6 +61,7 @@ export default function PlayerHome() {
   const videoCompletedKeyRef = React.useRef<string | null>(null);
   const restoreCurrentTimeRef = React.useRef<number | null>(null);
   const lastProgressPersistAtRef = React.useRef<number>(0);
+  const videoElRef = React.useRef<HTMLVideoElement | null>(null);
 
   const readPlaybackState = React.useCallback((): PersistedPlaybackState | null => {
     try {
@@ -540,7 +542,13 @@ export default function PlayerHome() {
               onTimeUpdate={handleVideoTimeUpdate}
               onEnded={handleVideoEnd}
               onError={handleVideoEnd}
+              videoElRef={videoElRef}
             />
+          )}
+
+          {/* YouTube-style buffer progress bar */}
+          {currentItem.mediaType === 'VIDEO' && (
+            <BufferBar videoRef={videoElRef} />
           )}
 
           <PlaybackOverlay

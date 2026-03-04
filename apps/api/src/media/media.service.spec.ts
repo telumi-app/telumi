@@ -22,16 +22,23 @@ describe('MediaService', () => {
   const storageMock: StorageProvider = {
     presignedPutUrl: vi.fn(),
     presignedGetUrl: vi.fn(),
+    getObject: vi.fn(),
+    putObject: vi.fn(),
+    listObjects: vi.fn(),
     delete: vi.fn(),
     exists: vi.fn(),
     ensureBucket: vi.fn(),
+  };
+
+  const transcodeMock = {
+    processTranscodeJob: vi.fn().mockResolvedValue('PENDING'),
   };
 
   const workspaceId = 'ws-1';
 
   beforeEach(() => {
     vi.clearAllMocks();
-    service = new MediaService(dbMock, storageMock);
+    service = new MediaService(dbMock, storageMock, transcodeMock as any);
   });
 
   // ─── requestUploadUrl ──────────────────────────────────────────────

@@ -26,9 +26,13 @@ describe('DevicesService', () => {
     },
   } as unknown as DatabaseService;
 
+  const configMock = {
+    get: vi.fn().mockReturnValue('https://telumiapi-production.up.railway.app'),
+  };
+
   beforeEach(() => {
     vi.clearAllMocks();
-    service = new DevicesService(dbMock);
+    service = new DevicesService(dbMock, configMock as any);
   });
 
   describe('create', () => {

@@ -8,6 +8,7 @@ import {
   NotFoundException,
   Optional,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { randomBytes } from 'crypto';
 import { Observable, Subject } from 'rxjs';
 import { filter, map } from 'rxjs/operators';
@@ -70,6 +71,7 @@ export class DevicesService {
 
   constructor(
     private readonly db: DatabaseService,
+    private readonly config: ConfigService,
     @Optional() @Inject(STORAGE_PROVIDER) private readonly storage?: StorageProvider,
   ) { }
 
@@ -110,6 +112,27 @@ export class DevicesService {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Build the playback URL for a media item.
+   * If HLS transcode is READY, return the HLS proxy URL.
+   * Otherwise, fall back to a presigned direct URL.
+   */
+  private async buildPlaybackUrl(media: {
+    storageKey: string;
+    hlsStatus: string | null;
+    id: string;
+  }): Promise<string | null> {
+    if (media.hlsStatus === 'READY') {
+      // Build HLS proxy URL: <apiPublicUrl>/v1/hls/<mediaId>/master.m3u8
+      const apiUrl = this.config.get<string>(
+        'API_PUBLIC_URL',
+        'https://telumiapi-production.up.railway.app',
+      );
+      return `${apiUrl}/v1/hls/${media.id}/master.m3u8`;
+    }
+    return this.buildSignedUrl(media.storageKey);
   }
 
   streamWorkspaceEvents(workspaceId: string): Observable<MessageEvent> {
@@ -684,6 +707,8 @@ export class DevicesService {
           durationMs: asset.durationMs,
           uploadStatus: asset.media.uploadStatus,
           storageKey: asset.media.storageKey,
+          hlsStatus: asset.media.hlsStatus,
+          mediaId: asset.media.id,
         })) : [])
         : (schedule.playlist?.items ?? []).map((item) => ({
           assetId: item.id,
@@ -692,6 +717,8 @@ export class DevicesService {
           durationMs: item.durationMs,
           uploadStatus: item.media.uploadStatus,
           storageKey: item.media.storageKey,
+          hlsStatus: item.media.hlsStatus,
+          mediaId: item.media.id,
         }));
 
       const readyItems = itemsRaw.filter((item) => item.uploadStatus === 'READY');
@@ -699,7 +726,11 @@ export class DevicesService {
       const signedItems = (
         await Promise.all(
           readyItems.map(async (item) => {
-            const url = await this.buildSignedUrl(item.storageKey);
+            const url = await this.buildPlaybackUrl({
+              storageKey: item.storageKey,
+              hlsStatus: item.hlsStatus ?? null,
+              id: item.mediaId,
+            });
             if (!url) return null;
             return {
               assetId: item.assetId,
@@ -873,6 +904,8 @@ export class DevicesService {
         durationMs: asset.durationMs,
         uploadStatus: asset.media.uploadStatus,
         storageKey: asset.media.storageKey,
+        hlsStatus: asset.media.hlsStatus,
+        mediaId: asset.media.id,
       }));
 
       const readyItems = timelineRaw.filter((item) => item.uploadStatus === 'READY');
@@ -880,7 +913,11 @@ export class DevicesService {
       const signedTimeline = (
         await Promise.all(
           readyItems.map(async (item) => {
-            const url = await this.buildSignedUrl(item.storageKey);
+            const url = await this.buildPlaybackUrl({
+              storageKey: item.storageKey,
+              hlsStatus: item.hlsStatus ?? null,
+              id: item.mediaId,
+            });
             if (!url) return null;
             return {
               assetId: item.assetId,

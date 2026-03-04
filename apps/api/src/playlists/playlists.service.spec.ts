@@ -33,6 +33,9 @@ describe('PlaylistsService', () => {
   const storageMock: StorageProvider = {
     presignedPutUrl: vi.fn(),
     presignedGetUrl: vi.fn(),
+    getObject: vi.fn(),
+    putObject: vi.fn(),
+    listObjects: vi.fn(),
     exists: vi.fn(),
     delete: vi.fn(),
     ensureBucket: vi.fn(),

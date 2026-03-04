@@ -297,12 +297,14 @@ model Media {
   durationMs   Int?         @map("duration_ms")
   width        Int?
   height       Int?
-  storageKey   String       @map("storage_key")
-  thumbnailKey String?      @map("thumbnail_key")
-  hash         String?
-  uploadStatus UploadStatus @default(PENDING) @map("upload_status")
-  createdAt    DateTime     @default(now()) @map("created_at")
-  updatedAt    DateTime     @updatedAt @map("updated_at")
+  storageKey     String       @map("storage_key")
+  thumbnailKey   String?      @map("thumbnail_key")
+  hash           String?
+  uploadStatus   UploadStatus @default(PENDING) @map("upload_status")
+  hlsStatus      String?      @map("hls_status")       /// PENDING | PROCESSING | READY | FAILED
+  hlsManifestKey String?      @map("hls_manifest_key") /// e.g. "workspaceId/mediaId/hls/master.m3u8"
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 

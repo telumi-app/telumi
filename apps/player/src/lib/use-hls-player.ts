@@ -6,40 +6,64 @@ import Hls, { type HlsConfig } from 'hls.js';
 // ────────────────────────────────────────────────────────────
 // HLS.js configuration optimised for digital-signage players
 // running on low-power devices (smart TVs, sticks, mini-PCs).
+// Uses modern fragLoadPolicy / manifestLoadPolicy API (hls.js ≥ 1.4).
 // ────────────────────────────────────────────────────────────
 const HLS_CONFIG: Partial<HlsConfig> = {
   // Worker off-loads demuxing from main thread → smoother UI
   enableWorker: true,
 
-  // We are VOD / looped-VOD; low-latency mode adds overhead
+  // VOD / looped-VOD; low-latency mode adds overhead
   lowLatencyMode: false,
 
   // ── Buffer tuning ──────────────────────────────────────────
-  // Keep up to 30 s ahead; never exceed 120 s
-  maxBufferLength: 30,
-  maxMaxBufferLength: 120,
-  // Retain 90 s of back-buffer so seeks after stall are instant
-  backBufferLength: 90,
-
-  // ── Manifest / level / fragment loading ────────────────────
-  manifestLoadingTimeOut: 10_000,
-  manifestLoadingMaxRetry: 4,
-  manifestLoadingRetryDelay: 1_000,
-
-  levelLoadingTimeOut: 10_000,
-  levelLoadingMaxRetry: 4,
-  levelLoadingRetryDelay: 1_000,
-
-  fragLoadingTimeOut: 20_000,
-  fragLoadingMaxRetry: 6,
-  fragLoadingRetryDelay: 1_000,
-  fragLoadingMaxRetryTimeout: 10_000,
+  maxBufferLength: 30,           // Target 30 s ahead
+  maxMaxBufferLength: 120,       // Never exceed 120 s
+  maxBufferSize: 60 * 1024 * 1024, // 60 MB byte limit
+  maxBufferHole: 0.5,            // Seek over gaps ≤ 0.5 s
+  backBufferLength: 90,          // Keep 90 s of back-buffer
 
   // ── ABR (Adaptive Bitrate) ─────────────────────────────────
-  // Conservative: prefer uninterrupted playback over max quality
   abrEwmaDefaultEstimate: 1_000_000,  // 1 Mbps initial guess
-  abrBandWidthFactor: 0.8,            // headroom down (80 %)
+  abrBandWidthFactor: 0.8,            // 80 % headroom down
   abrBandWidthUpFactor: 0.7,          // conservative up-switch
+  capLevelToPlayerSize: true,          // limit rendition to player viewport
+  capLevelOnFPSDrop: true,             // drop quality on FPS stutter
+
+  // ── Loading policies (modern API) ──────────────────────────
+  fragLoadPolicy: {
+    default: {
+      maxTimeToFirstByteMs: 10_000,
+      maxLoadTimeMs: 120_000,
+      timeoutRetry: {
+        maxNumRetry: 4,
+        retryDelayMs: 1_000,
+        maxRetryDelayMs: 8_000,
+      },
+      errorRetry: {
+        maxNumRetry: 6,
+        retryDelayMs: 1_000,
+        maxRetryDelayMs: 8_000,
+        backoff: 'exponential',
+      },
+    },
+  },
+  manifestLoadPolicy: {
+    default: {
+      maxTimeToFirstByteMs: 10_000,
+      maxLoadTimeMs: 20_000,
+      timeoutRetry: {
+        maxNumRetry: 3,
+        retryDelayMs: 1_000,
+        maxRetryDelayMs: 8_000,
+      },
+      errorRetry: {
+        maxNumRetry: 3,
+        retryDelayMs: 1_000,
+        maxRetryDelayMs: 8_000,
+        backoff: 'exponential',
+      },
+    },
+  },
 };
 
 export type UseHlsPlayerOptions = {
@@ -72,6 +96,7 @@ export function useHlsPlayer(options: UseHlsPlayerOptions) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
   const startAtRef = useRef<number | null>(startAt ?? null);
+  const recoverAttemptRef = useRef(0);
 
   // Keep startAt in sync
   useEffect(() => {
@@ -108,18 +133,35 @@ export function useHlsPlayer(options: UseHlsPlayerOptions) {
         });
       });
 
-      // ── Error recovery ──────────────────────────────────────
+      // ── Escalated error recovery (3 attempts) ──────────
       hls.on(Hls.Events.ERROR, (_event, data) => {
         if (!data.fatal) return;
 
+        const attempt = recoverAttemptRef.current;
+
         switch (data.type) {
           case Hls.ErrorTypes.NETWORK_ERROR:
-            // Try to recover network errors (stalls)
+            // Network: reload the manifest / restart loading
             hls.startLoad();
             break;
+
           case Hls.ErrorTypes.MEDIA_ERROR:
-            hls.recoverMediaError();
+            if (attempt === 0) {
+              // 1st attempt: simple media error recovery
+              hls.recoverMediaError();
+            } else if (attempt === 1) {
+              // 2nd attempt: swap audio codec + recover
+              hls.swapAudioCodec();
+              hls.recoverMediaError();
+            } else {
+              // 3rd attempt: full detach/reattach
+              hls.detachMedia();
+              hls.attachMedia(video);
+              hls.loadSource(src);
+            }
+            recoverAttemptRef.current = attempt + 1;
             break;
+
           default:
             // Truly fatal → signal caller
             hls.destroy();
@@ -127,6 +169,11 @@ export function useHlsPlayer(options: UseHlsPlayerOptions) {
             onError?.();
             break;
         }
+      });
+
+      // Reset recovery counter on successful playback
+      hls.on(Hls.Events.FRAG_LOADED, () => {
+        recoverAttemptRef.current = 0;
       });
     } else {
       // Native HLS (Safari) or plain mp4

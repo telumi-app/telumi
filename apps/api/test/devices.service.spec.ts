@@ -66,7 +66,10 @@ describe('DevicesService', () => {
 
   beforeEach(() => {
     db = createMockDb();
-    service = new DevicesService(db as unknown as DatabaseService);
+    const configMock = {
+      get: vi.fn().mockReturnValue('https://telumiapi-production.up.railway.app'),
+    };
+    service = new DevicesService(db as unknown as DatabaseService, configMock as any);
   });
 
   // ── pairDevice ────────────────────────────────────────────────────

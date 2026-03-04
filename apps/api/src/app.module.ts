@@ -7,6 +7,7 @@ import { CampaignSchedulingModule } from './campaign-scheduling/campaign-schedul
 import { CampaignsModule } from './campaigns/campaigns.module';
 import { DevicesModule } from './devices/devices.module';
 import { LocationsModule } from './locations/locations.module';
+import { HlsModule } from './media/hls';
 import { MediaModule } from './media/media.module';
 import { DatabaseModule } from './modules/database';
 import { HealthModule } from './modules/health/health.module';
@@ -38,6 +39,7 @@ import { SchedulesModule } from './schedules/schedules.module';
     DatabaseModule,
     DevicesModule,
     HealthModule,
+    HlsModule,
     LocationsModule,
     MediaModule,
     OnboardingModule,

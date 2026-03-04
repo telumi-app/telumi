@@ -3,11 +3,10 @@ import { Module } from '@nestjs/common';
 import { DatabaseModule } from '@/modules/database';
 import { StorageModule } from '@/media/storage/storage.module';
 
-import { TranscodeService } from './transcode.service';
+import { HlsController } from './hls.controller';
 
 @Module({
   imports: [DatabaseModule, StorageModule],
-  providers: [TranscodeService],
-  exports: [TranscodeService],
+  controllers: [HlsController],
 })
-export class TranscodeModule {}
+export class HlsModule {}

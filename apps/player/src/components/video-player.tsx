@@ -12,6 +12,8 @@ type VideoPlayerProps = {
   onTimeUpdate: () => void;
   onEnded: () => void;
   onError: () => void;
+  /** Expose the internal video ref so sibling components (e.g. BufferBar) can read it */
+  videoElRef?: React.RefObject<HTMLVideoElement | null>;
 };
 
 /**
@@ -30,6 +32,7 @@ export const VideoPlayer = React.memo(function VideoPlayer({
   onTimeUpdate,
   onEnded,
   onError,
+  videoElRef,
 }: VideoPlayerProps) {
   const { videoRef } = useHlsPlayer({
     src,
@@ -38,6 +41,13 @@ export const VideoPlayer = React.memo(function VideoPlayer({
     onTimeUpdate,
     onEnded,
     onError,
+  });
+
+  // Sync external ref with internal ref
+  React.useEffect(() => {
+    if (videoElRef && 'current' in videoElRef) {
+      (videoElRef as React.MutableRefObject<HTMLVideoElement | null>).current = videoRef.current;
+    }
   });
 
   return (

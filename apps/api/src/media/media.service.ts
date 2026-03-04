@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 
@@ -18,12 +19,16 @@ import {
 } from './constants';
 import { RequestUploadUrlDto } from './dto/request-upload-url.dto';
 import { StorageProvider, STORAGE_PROVIDER } from './storage/storage.interface';
+import { TranscodeService } from './transcode';
 
 @Injectable()
 export class MediaService {
+  private readonly logger = new Logger(MediaService.name);
+
   constructor(
     private readonly db: DatabaseService,
     @Inject(STORAGE_PROVIDER) private readonly storage: StorageProvider,
+    private readonly transcodeService: TranscodeService,
   ) {}
 
   /**
@@ -151,6 +156,20 @@ export class MediaService {
       where: { id: mediaId },
       data: { uploadStatus: 'READY' },
     });
+
+    // Fire-and-forget: enqueue HLS transcode for video files
+    if (updated.mediaType === 'VIDEO') {
+      this.logger.log(`[Media] Enqueuing HLS transcode for video ${mediaId}`);
+      void this.transcodeService.processTranscodeJob({
+        workspaceId,
+        mediaId,
+        storageKey: updated.storageKey,
+      }).catch((err) => {
+        this.logger.error(
+          `[Media] Transcode enqueue failed for ${mediaId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+    }
 
     return {
       success: true,
