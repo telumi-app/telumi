@@ -43,7 +43,10 @@ export function LoginForm() {
   async function onSubmit(values: LoginFormData) {
     setServerError(null);
     try {
-      const response = await authApi.login(values);
+      const response = await authApi.login({
+        email: values.email!,
+        password: values.password!,
+      });
 
       if (response.data?.accessToken) {
         setSessionToken(response.data.accessToken);

@@ -47,7 +47,12 @@ export function RegisterForm() {
   async function onSubmit(values: RegisterFormData) {
     setServerError(null);
     try {
-      const response = await authApi.register(values);
+      const response = await authApi.register({
+        name: values.name!,
+        email: values.email!,
+        password: values.password!,
+        confirmPassword: values.confirmPassword!,
+      });
       if (response.success) {
         if (response.data?.accessToken) {
           setSessionToken(response.data.accessToken);
