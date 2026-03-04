@@ -6,7 +6,24 @@ type ApiResponse<T = unknown> = {
   message?: string;
 };
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
+function normalizeApiBaseUrl(rawUrl: string): string {
+  const trimmedUrl = rawUrl.trim().replace(/\/$/, '');
+
+  if (!trimmedUrl) {
+    return 'http://localhost:3001';
+  }
+
+  if (trimmedUrl.includes('telumi-api-production.up.railway.app')) {
+    return trimmedUrl.replace(
+      'telumi-api-production.up.railway.app',
+      'telumiapi-production.up.railway.app',
+    );
+  }
+
+  return trimmedUrl;
+}
+
+const API_BASE_URL = normalizeApiBaseUrl(process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001');
 
 const NETWORK_ERROR_MESSAGE =
   'Não foi possível conectar ao servidor. Verifique sua conexão e tente novamente.';
