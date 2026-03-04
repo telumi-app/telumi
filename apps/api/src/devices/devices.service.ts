@@ -699,8 +699,12 @@ export class DevicesService {
     }> = [];
 
     for (const schedule of activeSchedules) {
+      // For legacy schedule flow, serve any campaign that isn't FINISHED or CANCELLED.
+      // (The schedule being PUBLISHED is the authoritative signal, not the campaign status.)
+      const TERMINAL_CAMPAIGN_STATUSES = ['FINISHED', 'CANCELLED'];
       const itemsRaw = schedule.sourceType === 'CAMPAIGN'
-        ? (schedule.campaign?.status === 'ACTIVE' ? (schedule.campaign.assets ?? []).map((asset) => ({
+        ? (schedule.campaign && !TERMINAL_CAMPAIGN_STATUSES.includes(schedule.campaign.status)
+          ? (schedule.campaign.assets ?? []).map((asset) => ({
           assetId: asset.id,
           campaignId: schedule.campaignId ?? undefined,
           mediaType: asset.media.mediaType,

@@ -280,9 +280,28 @@ export class SchedulesService {
 
   /**
    * Publica uma programação (atalho para status PUBLISHED).
+   * Se o schedule for do tipo CAMPAIGN, promove a campanha para ACTIVE
+   * (caso ainda esteja em DRAFT ou PAUSED).
    */
   async publish(workspaceId: string, scheduleId: string) {
-    return this.update(workspaceId, scheduleId, { status: 'PUBLISHED' });
+    const result = await this.update(workspaceId, scheduleId, { status: 'PUBLISHED' });
+
+    // Promover campanha vinculada para ACTIVE quando schedule é publicado
+    const scheduleData = result.data as { sourceType?: string; campaignId?: string | null };
+    if (scheduleData?.sourceType === 'CAMPAIGN' && scheduleData.campaignId) {
+      await this.db.campaign
+        .updateMany({
+          where: {
+            id: scheduleData.campaignId,
+            workspaceId,
+            status: { in: ['DRAFT', 'PAUSED'] },
+          },
+          data: { status: 'ACTIVE' },
+        })
+        .catch(() => { /* best-effort — não bloquear publicação do schedule */ });
+    }
+
+    return result;
   }
 
   async remove(workspaceId: string, scheduleId: string) {
