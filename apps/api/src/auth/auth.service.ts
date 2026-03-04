@@ -12,6 +12,7 @@ import { scryptSync, timingSafeEqual } from 'crypto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
+import { UpdateMeDto } from './dto/update-me.dto';
 
 import { DatabaseService } from '@/modules/database';
 import {
@@ -36,6 +37,7 @@ type AuthUserData = {
   email: string;
   name: string | null;
   role: UserRole;
+  createdAt: string;
   workspace: {
     id: string;
     name: string;
@@ -234,6 +236,7 @@ export class AuthService {
         email: user.email,
         name: user.name,
         role: user.role,
+        createdAt: user.createdAt.toISOString(),
         workspace: {
           id: user.workspace.id,
           name: user.workspace.name,
@@ -250,6 +253,63 @@ export class AuthService {
         },
       },
     };
+  }
+
+  async updateMe(
+    authUser: { sub: string },
+    dto: UpdateMeDto,
+  ): Promise<ApiResponse<AuthUserData>> {
+    const user = await this.db.user.findUnique({
+      where: { id: authUser.sub },
+      select: {
+        id: true,
+        workspaceId: true,
+        email: true,
+      },
+    });
+
+    if (!user) {
+      throw new UnauthorizedException('Usuário não autenticado.');
+    }
+
+    const normalizedEmail = dto.email?.toLowerCase().trim();
+    const normalizedName = dto.name?.trim();
+    const normalizedWorkspaceName = dto.workspaceName?.trim();
+
+    if (normalizedEmail && normalizedEmail !== user.email) {
+      const existingUser = await this.db.user.findFirst({
+        where: {
+          email: normalizedEmail,
+          id: { not: user.id },
+        },
+        select: { id: true },
+      });
+
+      if (existingUser) {
+        throw new BadRequestException('Este e-mail já está em uso por outra conta.');
+      }
+    }
+
+    await this.db.$transaction(async (tx: any) => {
+      if (normalizedName || normalizedEmail) {
+        await tx.user.update({
+          where: { id: user.id },
+          data: {
+            ...(normalizedName ? { name: normalizedName } : {}),
+            ...(normalizedEmail ? { email: normalizedEmail } : {}),
+          },
+        });
+      }
+
+      if (normalizedWorkspaceName) {
+        await tx.workspace.update({
+          where: { id: user.workspaceId },
+          data: { name: normalizedWorkspaceName },
+        });
+      }
+    });
+
+    return this.me(authUser);
   }
 
   private generateWorkspaceSlug(name: string): string {

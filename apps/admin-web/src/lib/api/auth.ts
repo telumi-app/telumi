@@ -20,6 +20,12 @@ export type ForgotPasswordRequest = {
   email: string;
 };
 
+export type UpdateMeRequest = {
+  name?: string;
+  email?: string;
+  workspaceName?: string;
+};
+
 export type LoginResponseData = {
   accessToken: string;
   onboardingCompleted: boolean;
@@ -40,6 +46,7 @@ export type MeResponseData = {
   email: string;
   name: string | null;
   role: 'ADMIN' | 'OPERATOR';
+  createdAt: string;
   workspace: {
     id: string;
     name: string;
@@ -136,6 +143,37 @@ async function getRequest<TData>(
   return result;
 }
 
+async function patchRequest<TData, TPayload>(
+  path: string,
+  payload: TPayload,
+  token: string,
+): Promise<ApiResponse<TData>> {
+  let response: Response;
+
+  try {
+    response = await fetch(`${API_BASE_URL}/v1${path}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch (error) {
+    throw new Error(
+      isNetworkError(error) ? NETWORK_ERROR_MESSAGE : 'Ocorreu um erro inesperado.',
+    );
+  }
+
+  const result = (await response.json()) as ApiResponse<TData>;
+
+  if (!response.ok || !result.success) {
+    throw new Error(result.message ?? 'Não foi possível concluir a solicitação.');
+  }
+
+  return result;
+}
+
 export const authApi = {
   login: (payload: LoginRequest) => postRequest<LoginResponseData, LoginRequest>('/auth/login', payload),
   register: (payload: RegisterRequest) =>
@@ -143,4 +181,6 @@ export const authApi = {
   forgotPassword: (payload: ForgotPasswordRequest) =>
     postRequest<null, ForgotPasswordRequest>('/auth/forgot-password', payload),
   me: (token: string) => getRequest<MeResponseData>('/auth/me', token),
+  updateMe: (payload: UpdateMeRequest, token: string) =>
+    patchRequest<MeResponseData, UpdateMeRequest>('/auth/me', payload, token),
 };
