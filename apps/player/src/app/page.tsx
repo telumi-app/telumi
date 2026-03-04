@@ -8,6 +8,7 @@ const HEARTBEAT_QUEUE_KEY = 'telumi:heartbeat-queue';
 const DEVICE_TOKEN_KEY = 'deviceToken';
 const DEVICE_SECRET_KEY = 'deviceSecret';
 const PAIRED_DEVICE_KEY = 'telumi:paired-device';
+const PLAYBACK_STATE_KEY = 'telumi:playback-state';
 const HEARTBEAT_INTERVAL_MS = 15000;
 const MANIFEST_POLL_INTERVAL_MS = 15000;
 
@@ -19,8 +20,21 @@ type PairedDevice = {
   orientation: string;
 };
 
+type PersistedPlaybackState = {
+  assetId: string;
+  mediaType: 'IMAGE' | 'VIDEO';
+  startedAt: string;
+  currentTimeSec?: number;
+  manifestVersion?: string | null;
+  updatedAt: string;
+};
+
 function isTokenInvalidError(error: unknown): boolean {
-  return error instanceof ApiRequestError && (error.statusCode === 400 || error.statusCode === 404);
+  return error instanceof ApiRequestError && (
+    error.statusCode === 401 ||
+    error.statusCode === 403 ||
+    error.statusCode === 404
+  );
 }
 
 export default function PlayerHome() {
@@ -38,8 +52,33 @@ export default function PlayerHome() {
   }>>([]);
   const [currentIndex, setCurrentIndex] = React.useState(0);
   const [currentStartedAt, setCurrentStartedAt] = React.useState<string | null>(null);
+  const videoRef = React.useRef<HTMLVideoElement | null>(null);
   const videoFallbackTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const videoCompletedKeyRef = React.useRef<string | null>(null);
+  const restoreCurrentTimeRef = React.useRef<number | null>(null);
+  const lastProgressPersistAtRef = React.useRef<number>(0);
+
+  const readPlaybackState = React.useCallback((): PersistedPlaybackState | null => {
+    try {
+      const raw = localStorage.getItem(PLAYBACK_STATE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as PersistedPlaybackState;
+      if (!parsed?.assetId || !parsed?.mediaType || !parsed?.startedAt) {
+        return null;
+      }
+      return parsed;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const writePlaybackState = React.useCallback((state: PersistedPlaybackState | null) => {
+    if (!state) {
+      localStorage.removeItem(PLAYBACK_STATE_KEY);
+      return;
+    }
+    localStorage.setItem(PLAYBACK_STATE_KEY, JSON.stringify(state));
+  }, []);
     const readHeartbeatQueue = () => {
       try {
         const raw = localStorage.getItem(HEARTBEAT_QUEUE_KEY);
@@ -276,8 +315,25 @@ export default function PlayerHome() {
 
         setManifestVersion(manifest.manifestVersion);
         setPlaylistItems(manifest.items);
+
+        const persisted = readPlaybackState();
         setCurrentIndex((prev) => {
           if (manifest.items.length === 0) return 0;
+
+          if (persisted) {
+            const persistedIndex = manifest.items.findIndex((item) => item.assetId === persisted.assetId);
+            if (persistedIndex >= 0) {
+              if (persisted.mediaType === 'VIDEO' && typeof persisted.currentTimeSec === 'number') {
+                restoreCurrentTimeRef.current = Math.max(0, persisted.currentTimeSec);
+              } else {
+                restoreCurrentTimeRef.current = null;
+              }
+              setCurrentStartedAt(persisted.startedAt);
+              return persistedIndex;
+            }
+          }
+
+          restoreCurrentTimeRef.current = null;
           return prev >= manifest.items.length ? 0 : prev;
         });
       } catch (error) {
@@ -297,14 +353,19 @@ export default function PlayerHome() {
       cancelled = true;
       clearInterval(intervalId);
     };
-  }, [paired, clearPairing]);
+  }, [paired, clearPairing, readPlaybackState]);
 
   const currentItem = playlistItems.length > 0 ? playlistItems[currentIndex] : null;
+  const nextItem = playlistItems.length > 1
+    ? playlistItems[(currentIndex + 1) % playlistItems.length]
+    : null;
 
   const goToNextItem = React.useCallback(() => {
     if (playlistItems.length === 0) return;
+    restoreCurrentTimeRef.current = null;
+    writePlaybackState(null);
     setCurrentIndex((prev) => (prev + 1) % playlistItems.length);
-  }, [playlistItems.length]);
+  }, [playlistItems.length, writePlaybackState]);
 
   const completeCurrentVideo = React.useCallback(() => {
     if (!currentItem || currentItem.mediaType !== 'VIDEO') return;
@@ -343,8 +404,24 @@ export default function PlayerHome() {
   React.useEffect(() => {
     if (!paired || !currentItem || currentItem.mediaType !== 'IMAGE') return;
 
-    const startedAt = new Date().toISOString();
+    const persisted = readPlaybackState();
+    const now = Date.now();
+    const startedAt =
+      persisted?.assetId === currentItem.assetId && persisted.mediaType === 'IMAGE'
+        ? persisted.startedAt
+        : new Date(now).toISOString();
+
+    const elapsedMs = Math.max(0, now - new Date(startedAt).getTime());
+    const remainingMs = Math.max(0, currentItem.durationMs - elapsedMs);
+
     setCurrentStartedAt(startedAt);
+    writePlaybackState({
+      assetId: currentItem.assetId,
+      mediaType: 'IMAGE',
+      startedAt,
+      manifestVersion,
+      updatedAt: new Date().toISOString(),
+    });
 
     const timeoutId = setTimeout(() => {
       const endedAt = new Date().toISOString();
@@ -364,16 +441,45 @@ export default function PlayerHome() {
       }
 
       goToNextItem();
-    }, currentItem.durationMs);
+    }, remainingMs);
 
     return () => {
       clearTimeout(timeoutId);
     };
-  }, [paired, currentItem, goToNextItem, manifestVersion]);
+  }, [paired, currentItem, goToNextItem, manifestVersion, readPlaybackState, writePlaybackState]);
 
   const handleVideoStart = React.useCallback(() => {
-    setCurrentStartedAt(new Date().toISOString());
-  }, []);
+    const startedAt = new Date().toISOString();
+    setCurrentStartedAt(startedAt);
+
+    if (!currentItem || currentItem.mediaType !== 'VIDEO') return;
+
+    writePlaybackState({
+      assetId: currentItem.assetId,
+      mediaType: 'VIDEO',
+      startedAt,
+      currentTimeSec: videoRef.current?.currentTime ?? 0,
+      manifestVersion,
+      updatedAt: startedAt,
+    });
+  }, [currentItem, manifestVersion, writePlaybackState]);
+
+  const handleVideoTimeUpdate = React.useCallback(() => {
+    if (!currentItem || currentItem.mediaType !== 'VIDEO') return;
+
+    const now = Date.now();
+    if (now - lastProgressPersistAtRef.current < 1000) return;
+    lastProgressPersistAtRef.current = now;
+
+    writePlaybackState({
+      assetId: currentItem.assetId,
+      mediaType: 'VIDEO',
+      startedAt: currentStartedAt ?? new Date(now).toISOString(),
+      currentTimeSec: videoRef.current?.currentTime ?? 0,
+      manifestVersion,
+      updatedAt: new Date(now).toISOString(),
+    });
+  }, [currentItem, currentStartedAt, manifestVersion, writePlaybackState]);
 
   const handleVideoEnd = React.useCallback(() => {
     completeCurrentVideo();
@@ -403,6 +509,67 @@ export default function PlayerHome() {
     };
   }, [paired, currentItem, completeCurrentVideo]);
 
+  React.useEffect(() => {
+    if (!currentItem || currentItem.mediaType !== 'VIDEO') return;
+    const video = videoRef.current;
+    if (!video) return;
+
+    const tryStartPlayback = () => {
+      const result = video.play();
+      if (result && typeof result.then === 'function') {
+        void result.catch(() => {
+          setTimeout(() => {
+            const retry = video.play();
+            if (retry && typeof retry.then === 'function') {
+              void retry.catch(() => {
+                // mantém fallback de término para seguir playlist
+              });
+            }
+          }, 300);
+        });
+      }
+    };
+
+    const onLoadedMetadata = () => {
+      if (restoreCurrentTimeRef.current != null) {
+        try {
+          video.currentTime = restoreCurrentTimeRef.current;
+        } catch {
+          // ignore seek errors
+        }
+        restoreCurrentTimeRef.current = null;
+      }
+      tryStartPlayback();
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && video.paused) {
+        tryStartPlayback();
+      }
+    };
+
+    const onWaiting = () => {
+      // tentativa de recuperação em stalls eventuais
+      if (video.paused) {
+        tryStartPlayback();
+      }
+    };
+
+    video.addEventListener('loadedmetadata', onLoadedMetadata);
+    video.addEventListener('canplay', tryStartPlayback);
+    video.addEventListener('waiting', onWaiting);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    tryStartPlayback();
+
+    return () => {
+      video.removeEventListener('loadedmetadata', onLoadedMetadata);
+      video.removeEventListener('canplay', tryStartPlayback);
+      video.removeEventListener('waiting', onWaiting);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [currentItem]);
+
   // ── Tela pós-pareamento ─────────────────────────────────────────────
   if (paired) {
     if (currentItem) {
@@ -416,14 +583,19 @@ export default function PlayerHome() {
             />
           ) : (
             <video
+              ref={videoRef}
               key={`${currentItem.assetId}-${currentIndex}`}
               src={currentItem.url}
               className="h-screen w-screen object-contain"
               autoPlay
               muted
               playsInline
+              preload="auto"
+              disablePictureInPicture
+              controlsList="nodownload nofullscreen noremoteplayback"
               loop={false}
               onPlay={handleVideoStart}
+              onTimeUpdate={handleVideoTimeUpdate}
               onEnded={handleVideoEnd}
               onError={handleVideoEnd}
             />
@@ -432,6 +604,26 @@ export default function PlayerHome() {
           <div className="pointer-events-none absolute bottom-4 right-4 rounded-md bg-black/55 px-3 py-2 text-xs text-white/80">
             {currentIndex + 1}/{playlistItems.length} · {currentItem.mediaType === 'VIDEO' ? 'vídeo' : 'imagem'}
           </div>
+
+          {nextItem && (
+            nextItem.mediaType === 'IMAGE' ? (
+              <img
+                src={nextItem.url}
+                alt="Pré-carregamento"
+                className="hidden"
+                loading="eager"
+                decoding="async"
+              />
+            ) : (
+              <video
+                src={nextItem.url}
+                className="hidden"
+                muted
+                playsInline
+                preload="metadata"
+              />
+            )
+          )}
         </main>
       );
     }
