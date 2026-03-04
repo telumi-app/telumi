@@ -18,6 +18,16 @@ function normalizeApiBaseUrl(rawUrl: string): string {
 const API_BASE_URL = normalizeApiBaseUrl(process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001');
 const API_URL = `${API_BASE_URL}/v1`;
 
+export class ApiRequestError extends Error {
+    constructor(
+        message: string,
+        public readonly statusCode: number,
+    ) {
+        super(message);
+        this.name = 'ApiRequestError';
+    }
+}
+
 export type PairDeviceData = {
     deviceToken: string;
     deviceSecret?: string;
@@ -182,7 +192,7 @@ export const api = {
         });
 
         if (!response.ok) {
-            throw new Error('Falha ao enviar heartbeat.');
+            throw new ApiRequestError('Falha ao enviar heartbeat.', response.status);
         }
     },
 
@@ -194,7 +204,7 @@ export const api = {
         });
 
         if (!response.ok) {
-            throw new Error('Falha ao obter manifesto de reprodução.');
+            throw new ApiRequestError('Falha ao obter manifesto de reprodução.', response.status);
         }
 
         const body = await response.json() as {

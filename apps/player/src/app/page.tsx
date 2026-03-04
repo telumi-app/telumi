@@ -2,9 +2,12 @@
 
 import * as React from 'react';
 import { QRCodeSVG } from 'qrcode.react';
-import { api } from '@/lib/api';
+import { api, ApiRequestError } from '@/lib/api';
 
 const HEARTBEAT_QUEUE_KEY = 'telumi:heartbeat-queue';
+const DEVICE_TOKEN_KEY = 'deviceToken';
+const DEVICE_SECRET_KEY = 'deviceSecret';
+const PAIRED_DEVICE_KEY = 'telumi:paired-device';
 const HEARTBEAT_INTERVAL_MS = 15000;
 const MANIFEST_POLL_INTERVAL_MS = 15000;
 
@@ -15,6 +18,10 @@ type PairedDevice = {
   locationName: string;
   orientation: string;
 };
+
+function isTokenInvalidError(error: unknown): boolean {
+  return error instanceof ApiRequestError && (error.statusCode === 400 || error.statusCode === 404);
+}
 
 export default function PlayerHome() {
   const [code, setCode] = React.useState('');
@@ -73,10 +80,34 @@ export default function PlayerHome() {
 
   const [isAutoPairing, setIsAutoPairing] = React.useState(true);
 
+  const persistPairing = React.useCallback((data: {
+    deviceToken: string;
+    deviceSecret?: string;
+    device: PairedDevice;
+  }) => {
+    localStorage.setItem(DEVICE_TOKEN_KEY, data.deviceToken);
+    if (data.deviceSecret) {
+      localStorage.setItem(DEVICE_SECRET_KEY, data.deviceSecret);
+    }
+    localStorage.setItem(PAIRED_DEVICE_KEY, JSON.stringify(data.device));
+  }, []);
+
+  const clearPairing = React.useCallback((message?: string) => {
+    localStorage.removeItem(DEVICE_TOKEN_KEY);
+    localStorage.removeItem(DEVICE_SECRET_KEY);
+    localStorage.removeItem(PAIRED_DEVICE_KEY);
+    setPaired(null);
+    setPlaylistItems([]);
+    setManifestVersion(null);
+    if (message) {
+      setErrorMsg(message);
+    }
+  }, []);
+
   // URL do painel admin — o QR Code aponta para cá
   const adminUrl = process.env.NEXT_PUBLIC_ADMIN_URL ?? 'https://telumi.com.br/telas';
 
-  const handlePair = async () => {
+  const handlePair = React.useCallback(async () => {
     setErrorMsg('');
     setIsLoading(true);
 
@@ -84,10 +115,11 @@ export default function PlayerHome() {
       const result = await api.pairDevice(code);
 
       if (result.success) {
-        localStorage.setItem('deviceToken', result.data.deviceToken);
-        if (result.data.deviceSecret) {
-          localStorage.setItem('deviceSecret', result.data.deviceSecret);
-        }
+        persistPairing({
+          deviceToken: result.data.deviceToken,
+          deviceSecret: result.data.deviceSecret,
+          device: result.data.device,
+        });
         setPaired(result.data.device);
         void api.sendTelemetryEvent({
           deviceToken: result.data.deviceToken,
@@ -102,7 +134,7 @@ export default function PlayerHome() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [code, persistPairing]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && code.length >= 6) {
@@ -135,10 +167,11 @@ export default function PlayerHome() {
         if (cancelled) return;
 
         if (result.success) {
-          localStorage.setItem('deviceToken', result.data.deviceToken);
-          if (result.data.deviceSecret) {
-            localStorage.setItem('deviceSecret', result.data.deviceSecret);
-          }
+          persistPairing({
+            deviceToken: result.data.deviceToken,
+            deviceSecret: result.data.deviceSecret,
+            device: result.data.device,
+          });
           setPaired(result.data.device);
           window.history.replaceState({}, '', '/');
           void api.sendTelemetryEvent({
@@ -164,44 +197,29 @@ export default function PlayerHome() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [persistPairing]);
 
   React.useEffect(() => {
     if (paired) return;
 
-    const storedToken = localStorage.getItem('deviceToken');
-    if (!storedToken) return;
+    const storedToken = localStorage.getItem(DEVICE_TOKEN_KEY);
+    const storedDeviceRaw = localStorage.getItem(PAIRED_DEVICE_KEY);
+    if (!storedToken || !storedDeviceRaw) {
+      setIsAutoPairing(false);
+      return;
+    }
 
-    let cancelled = false;
-
-    const reconnect = async () => {
-      setErrorMsg('');
-      setIsLoading(true);
-
-      try {
-        const result = await api.pairDeviceByToken(storedToken);
-        if (cancelled) return;
-
-        if (result.success) {
-          setPaired(result.data.device);
-          return;
-        }
-
-        localStorage.removeItem('deviceToken');
-        setErrorMsg('userMessage' in result ? result.userMessage : 'Falha ao reconectar dispositivo.');
-      } finally {
-        if (!cancelled) {
-          setIsLoading(false);
-          setIsAutoPairing(false);
-        }
+    try {
+      const storedDevice = JSON.parse(storedDeviceRaw) as PairedDevice;
+      if (storedDevice?.id && storedDevice?.name) {
+        setPaired(storedDevice);
       }
-    };
-
-    void reconnect();
-
-    return () => {
-      cancelled = true;
-    };
+    } catch {
+      localStorage.removeItem(PAIRED_DEVICE_KEY);
+    } finally {
+      setIsAutoPairing(false);
+      setIsLoading(false);
+    }
   }, [paired]);
 
   React.useEffect(() => {
@@ -223,7 +241,11 @@ export default function PlayerHome() {
           playerStatus: playlistItems.length > 0 ? 'PLAYING' : 'WAITING_CONTENT',
           manifestVersion: manifestVersion ?? undefined,
         });
-      } catch {
+      } catch (error) {
+        if (isTokenInvalidError(error)) {
+          clearPairing('A conexão desta tela expirou. Faça o pareamento novamente no painel.');
+          return;
+        }
         enqueueHeartbeat(occurredAt);
       }
     };
@@ -245,7 +267,7 @@ export default function PlayerHome() {
     let cancelled = false;
 
     const fetchManifest = async () => {
-      const deviceToken = localStorage.getItem('deviceToken');
+      const deviceToken = localStorage.getItem(DEVICE_TOKEN_KEY);
       if (!deviceToken || cancelled) return;
 
       try {
@@ -258,7 +280,10 @@ export default function PlayerHome() {
           if (manifest.items.length === 0) return 0;
           return prev >= manifest.items.length ? 0 : prev;
         });
-      } catch {
+      } catch (error) {
+        if (isTokenInvalidError(error)) {
+          clearPairing('A conexão desta tela expirou. Faça o pareamento novamente no painel.');
+        }
         // best-effort polling
       }
     };
@@ -272,7 +297,7 @@ export default function PlayerHome() {
       cancelled = true;
       clearInterval(intervalId);
     };
-  }, [paired]);
+  }, [paired, clearPairing]);
 
   const currentItem = playlistItems.length > 0 ? playlistItems[currentIndex] : null;
 
@@ -297,7 +322,7 @@ export default function PlayerHome() {
 
     const endedAt = new Date().toISOString();
     const startedAt = currentStartedAt ?? new Date(Date.now() - currentItem.durationMs).toISOString();
-    const deviceToken = localStorage.getItem('deviceToken');
+    const deviceToken = localStorage.getItem(DEVICE_TOKEN_KEY);
 
     if (deviceToken) {
       void api.sendPlayEvent({
@@ -323,7 +348,7 @@ export default function PlayerHome() {
 
     const timeoutId = setTimeout(() => {
       const endedAt = new Date().toISOString();
-      const deviceToken = localStorage.getItem('deviceToken');
+      const deviceToken = localStorage.getItem(DEVICE_TOKEN_KEY);
 
       if (deviceToken) {
         void api.sendPlayEvent({
