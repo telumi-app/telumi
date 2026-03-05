@@ -4,7 +4,6 @@ import * as React from "react"
 import Link from "next/link"
 import {
   CalendarSyncIcon,
-  HelpCircleIcon,
   DashboardBrowsingIcon,
   TvSmartIcon,
   PlaySquareIcon,
@@ -75,7 +74,7 @@ const data = {
         },
         {
           title: "Monitoramento",
-          url: "/monitoramento",
+          url: "/dashboard",
           icon: ActivityIcon,
         },
       ],
@@ -85,13 +84,8 @@ const data = {
       items: [
         {
           title: "Configurações",
-          url: "/configuracoes",
+          url: "/conta",
           icon: ListSettingIcon,
-        },
-        {
-          title: "Ajuda",
-          url: "/ajuda",
-          icon: HelpCircleIcon,
         },
       ],
     },

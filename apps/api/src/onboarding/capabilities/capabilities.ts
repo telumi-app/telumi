@@ -70,13 +70,13 @@ const checklistByGoalProfile: Record<
       id: 'create-first-content',
       label: 'Criar primeiro conteúdo',
       description: 'Envie um conteúdo para começar sua programação.',
-      actionRoute: '/media/new',
+      actionRoute: '/midias',
     },
     {
       id: 'publish-to-tv',
       label: 'Publicar na TV',
       description: 'Associe o conteúdo a uma tela e publique a exibição.',
-      actionRoute: '/schedule/new',
+      actionRoute: '/programacao',
     },
   ],
   ADS_SALES: [
@@ -102,19 +102,19 @@ const checklistByGoalProfile: Record<
       id: 'create-first-campaign',
       label: 'Criar primeira campanha',
       description: 'Prepare sua primeira campanha para anunciantes.',
-      actionRoute: '/campaigns/new',
+      actionRoute: '/campanhas/criar',
     },
     {
       id: 'setup-billing',
       label: 'Configurar cobrança',
       description: 'Defina as configurações de cobrança para começar a vender.',
-      actionRoute: '/billing/setup',
+      actionRoute: '/conta',
     },
     {
       id: 'validate-account',
       label: 'Validar conta',
       description: 'Finalize a validação da conta para liberar as vendas.',
-      actionRoute: '/billing/validation',
+      actionRoute: '/conta',
     },
   ],
 };
