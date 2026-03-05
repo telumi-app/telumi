@@ -108,8 +108,14 @@ export class DevicesService {
     if (now < startDate) return false;
     if (endDate && now > endDate) return false;
 
-    const today = now.getDay();
-    if (!schedule.daysOfWeek.includes(today)) return false;
+    const saoPauloDay = now.getDay();
+    const systemLocalDay = new Date().getDay();
+    if (
+      !schedule.daysOfWeek.includes(saoPauloDay) &&
+      !schedule.daysOfWeek.includes(systemLocalDay)
+    ) {
+      return false;
+    }
 
     const hh = String(now.getHours()).padStart(2, '0');
     const mm = String(now.getMinutes()).padStart(2, '0');
@@ -712,11 +718,11 @@ export class DevicesService {
     }> = [];
 
     for (const schedule of activeSchedules) {
-      // For legacy schedule flow, serve any campaign that isn't FINISHED or CANCELLED.
-      // (The schedule being PUBLISHED is the authoritative signal, not the campaign status.)
-      const TERMINAL_CAMPAIGN_STATUSES = ['FINISHED', 'CANCELLED'];
+      // For legacy schedule flow, serve only campaigns aptas para reprodução.
+      // Campanhas PAUSED/FINISHED/CANCELLED não devem tocar no player.
+      const NON_PLAYABLE_CAMPAIGN_STATUSES = ['PAUSED', 'FINISHED', 'CANCELLED'];
       const itemsRaw = schedule.sourceType === 'CAMPAIGN'
-        ? (schedule.campaign && !TERMINAL_CAMPAIGN_STATUSES.includes(schedule.campaign.status)
+        ? (schedule.campaign && !NON_PLAYABLE_CAMPAIGN_STATUSES.includes(schedule.campaign.status)
           ? (schedule.campaign.assets ?? []).map((asset) => ({
           assetId: asset.id,
           campaignId: schedule.campaignId ?? undefined,

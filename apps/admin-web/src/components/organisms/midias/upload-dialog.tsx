@@ -824,7 +824,19 @@ export function UploadDialog({
           </section>
 
           <section className="col-span-12 flex flex-col px-5 py-5 md:col-span-3 md:px-6 md:py-6">
-            <h3 className="mb-4 text-sm font-semibold">Enviar novo</h3>
+            <div className="mb-4 flex items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold">Enviar novo</h3>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="gap-2"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <HugeiconsIcon icon={Upload04Icon} size={14} />
+                Enviar novo
+              </Button>
+            </div>
 
             <div
               className={cn(

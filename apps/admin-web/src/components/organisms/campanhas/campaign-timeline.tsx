@@ -308,8 +308,7 @@ export function CampaignTimeline({
   });
 
   const handleOpenSaveModal = () => {
-    setDraftPlaylistName('');
-    setSaveModalOpen(true);
+    void onSavePlaylist();
   };
 
   const handleConfirmSave = async () => {
@@ -435,7 +434,7 @@ export function CampaignTimeline({
                 </Button>
 
                 <div className="flex items-center gap-3 text-sm">
-                  <span className="font-semibold text-foreground">{orderedItems.length} criativos</span>
+                  <span className="font-semibold text-foreground">{orderedItems.length} clipes</span>
                   <span className="h-4 w-px bg-border" aria-hidden="true" />
                   <span className="font-bold text-primary tracking-wide tabular-nums">
                     {formatTimelineTimecode(totalDurationSeconds)}
