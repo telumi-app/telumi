@@ -22,6 +22,45 @@ function normalizeApiBaseUrl(rawUrl: string): string {
 const API_BASE_URL = normalizeApiBaseUrl(process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001');
 const API_URL_CANDIDATES = [`${API_BASE_URL}/v1`, API_BASE_URL];
 
+// ── Offline manifest cache ──────────────────────────────────────────
+const MANIFEST_CACHE_KEY = 'telumi:manifest-cache';
+const MANIFEST_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+type CachedManifest = {
+  manifest: PlaybackManifest;
+  cachedAt: number;
+};
+
+function cacheManifest(manifest: PlaybackManifest): void {
+  try {
+    const entry: CachedManifest = { manifest, cachedAt: Date.now() };
+    localStorage.setItem(MANIFEST_CACHE_KEY, JSON.stringify(entry));
+  } catch {
+    // quota exceeded or unavailable — ignore
+  }
+}
+
+function getCachedManifest(): PlaybackManifest | null {
+  try {
+    const raw = localStorage.getItem(MANIFEST_CACHE_KEY);
+    if (!raw) return null;
+    const entry = JSON.parse(raw) as CachedManifest;
+    if (Date.now() - entry.cachedAt > MANIFEST_CACHE_TTL_MS) {
+      localStorage.removeItem(MANIFEST_CACHE_KEY);
+      return null;
+    }
+    return entry.manifest;
+  } catch {
+    return null;
+  }
+}
+
+/** Returns true when the player is operating from a cached manifest. */
+let _isOffline = false;
+export function isOfflineMode(): boolean {
+  return _isOffline;
+}
+
 async function fetchWithApiPrefixFallback(path: string, init: RequestInit): Promise<Response> {
     const [primaryUrl, fallbackUrl] = API_URL_CANDIDATES;
     const primaryResponse = await fetch(`${primaryUrl}${path}`, init);
@@ -65,6 +104,12 @@ export type HeartbeatPayload = {
     occurredAt: string;
     playerStatus?: string;
     manifestVersion?: string;
+    // ── Enriched telemetry (Phase 8) ─────────────────────────
+    playerVersion?: string;
+    uptimeMs?: number;
+    memoryUsageMB?: number;
+    cacheMode?: string;
+    isOffline?: boolean;
 };
 
 export type ManifestItem = {
@@ -214,27 +259,42 @@ export const api = {
     },
 
     async getManifest(deviceToken: string): Promise<PlaybackManifest> {
-        const response = await fetchWithApiPrefixFallback('/devices/public/manifest', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ deviceToken }),
-            cache: 'no-store',
-        });
+        try {
+            const response = await fetchWithApiPrefixFallback('/devices/public/manifest', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ deviceToken }),
+                cache: 'no-store',
+            });
 
-        if (!response.ok) {
-            throw new ApiRequestError('Falha ao obter manifesto de reprodução.', response.status);
+            if (!response.ok) {
+                throw new ApiRequestError('Falha ao obter manifesto de reprodução.', response.status);
+            }
+
+            const body = await response.json() as {
+                success: boolean;
+                data?: PlaybackManifest;
+            };
+
+            if (!body.success || !body.data) {
+                throw new Error('Manifesto inválido.');
+            }
+
+            // Cache the successful manifest for offline use
+            _isOffline = false;
+            cacheManifest(body.data);
+            return body.data;
+        } catch (error) {
+            // On network failure, try the offline cache
+            if (!(error instanceof ApiRequestError) || (error.statusCode >= 500)) {
+                const cached = getCachedManifest();
+                if (cached) {
+                    _isOffline = true;
+                    return cached;
+                }
+            }
+            throw error;
         }
-
-        const body = await response.json() as {
-            success: boolean;
-            data?: PlaybackManifest;
-        };
-
-        if (!body.success || !body.data) {
-            throw new Error('Manifesto inválido.');
-        }
-
-        return body.data;
     },
 
     async sendTelemetryEvent(payload: {

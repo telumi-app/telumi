@@ -2,12 +2,14 @@
 
 import * as React from 'react';
 import { QRCodeSVG } from 'qrcode.react';
-import { api, ApiRequestError } from '@/lib/api';
-import { precacheAssets } from '@/lib/media-cache';
-import { VideoPlayer } from '@/components/video-player';
+import { api, ApiRequestError, isOfflineMode } from '@/lib/api';
+import { precacheAssets, detectCacheMode, getCacheMode } from '@/lib/media-cache';
+import { DualMediaPlayer } from '@/components/dual-media-player';
 import { PlaybackOverlay } from '@/components/playback-overlay';
-import { AssetPrefetch } from '@/components/asset-prefetch';
-import { BufferBar } from '@/components/buffer-bar';
+import { getSchedulePosition } from '@/lib/scheduler';
+import { PlaybackWatchdog } from '@/lib/watchdog';
+import { registerServiceWorker } from '@/lib/sw-register';
+import { getUptimeMs, PLAYER_VERSION } from '@/lib/boot-time';
 
 const HEARTBEAT_QUEUE_KEY = 'telumi:heartbeat-queue';
 const DEVICE_TOKEN_KEY = 'deviceToken';
@@ -62,6 +64,15 @@ export default function PlayerHome() {
   const restoreCurrentTimeRef = React.useRef<number | null>(null);
   const lastProgressPersistAtRef = React.useRef<number>(0);
   const videoElRef = React.useRef<HTMLVideoElement | null>(null);
+
+  // ── Service Worker + Adaptive Cache (boot-time init) ─────────────
+  React.useEffect(() => {
+    void registerServiceWorker();
+    void detectCacheMode();
+  }, []);
+
+  // ── Watchdog ─────────────────────────────────────────────────────
+  const watchdogRef = React.useRef<PlaybackWatchdog | null>(null);
 
   const readPlaybackState = React.useCallback((): PersistedPlaybackState | null => {
     try {
@@ -284,6 +295,15 @@ export default function PlayerHome() {
           occurredAt,
           playerStatus: playlistItems.length > 0 ? 'PLAYING' : 'WAITING_CONTENT',
           manifestVersion: manifestVersion ?? undefined,
+          // Enriched telemetry (Phase 8)
+          playerVersion: PLAYER_VERSION,
+          uptimeMs: getUptimeMs(),
+          memoryUsageMB: (performance as unknown as { memory?: { usedJSHeapSize?: number } })
+            .memory?.usedJSHeapSize
+            ? Math.round(((performance as unknown as { memory: { usedJSHeapSize: number } }).memory.usedJSHeapSize / 1024 / 1024) * 10) / 10
+            : undefined,
+          cacheMode: getCacheMode(),
+          isOffline: isOfflineMode(),
         });
       } catch (error) {
         if (isTokenInvalidError(error)) {
@@ -341,8 +361,10 @@ export default function PlayerHome() {
             }
           }
 
+          // Deterministic scheduler: sync to wall-clock position
           restoreCurrentTimeRef.current = null;
-          return prev >= manifest.items.length ? 0 : prev;
+          const pos = getSchedulePosition(manifest.items);
+          return pos.index;
         });
       } catch (error) {
         if (isTokenInvalidError(error)) {
@@ -521,45 +543,54 @@ export default function PlayerHome() {
     };
   }, [paired, currentItem, completeCurrentVideo]);
 
+  // ── Watchdog: monitor playback health ────────────────────────────
+  React.useEffect(() => {
+    if (!paired || !currentItem) {
+      watchdogRef.current?.stop();
+      return;
+    }
+
+    if (!watchdogRef.current) {
+      watchdogRef.current = new PlaybackWatchdog({
+        onSkip: () => goToNextItem(),
+        onReload: () => window.location.reload(),
+      });
+    }
+
+    if (currentItem.mediaType === 'VIDEO') {
+      watchdogRef.current.watch(videoElRef.current, currentItem.durationMs);
+    } else {
+      watchdogRef.current.watchImage(currentItem.durationMs);
+    }
+
+    return () => {
+      watchdogRef.current?.stop();
+    };
+  }, [paired, currentItem, goToNextItem]);
+
   // ── Tela pós-pareamento ─────────────────────────────────────────────
   if (paired) {
     if (currentItem) {
       return (
         <main className="relative min-h-screen overflow-hidden bg-black">
-          {currentItem.mediaType === 'IMAGE' ? (
-            <img
-              src={currentItem.url}
-              alt="Mídia da campanha"
-              className="h-screen w-screen object-contain"
-            />
-          ) : (
-            <VideoPlayer
-              src={currentItem.url}
-              assetId={currentItem.assetId}
-              index={currentIndex}
-              startAt={restoreCurrentTimeRef.current}
-              onPlay={handleVideoStart}
-              onTimeUpdate={handleVideoTimeUpdate}
-              onEnded={handleVideoEnd}
-              onError={handleVideoEnd}
-              videoElRef={videoElRef}
-            />
-          )}
-
-          {/* YouTube-style buffer progress bar */}
-          {currentItem.mediaType === 'VIDEO' && (
-            <BufferBar videoRef={videoElRef} />
-          )}
+          <DualMediaPlayer
+            currentItem={currentItem}
+            nextItem={nextItem}
+            currentIndex={currentIndex}
+            startAt={restoreCurrentTimeRef.current}
+            onPlay={handleVideoStart}
+            onTimeUpdate={handleVideoTimeUpdate}
+            onEnded={handleVideoEnd}
+            onError={handleVideoEnd}
+            videoElRef={videoElRef as React.MutableRefObject<HTMLVideoElement | null>}
+          />
 
           <PlaybackOverlay
             currentIndex={currentIndex}
             totalItems={playlistItems.length}
             mediaType={currentItem.mediaType}
+            isOffline={isOfflineMode()}
           />
-
-          {nextItem && (
-            <AssetPrefetch url={nextItem.url} mediaType={nextItem.mediaType} />
-          )}
         </main>
       );
     }

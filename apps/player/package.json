@@ -17,6 +17,11 @@
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },
+  "browserslist": [
+    "Chrome >= 56",
+    "Safari >= 10",
+    "ChromeAndroid >= 56"
+  ],
   "devDependencies": {
     "@tailwindcss/postcss": "^4.1.0",
     "@telumi/tsconfig": "workspace:*",

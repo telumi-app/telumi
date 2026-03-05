@@ -1,10 +1,22 @@
 {
   "servers": {
+    "Vercel": {
+      "type": "http",
+      "url": "https://mcp.vercel.com"
+    },
     "shadcn": {
       "command": "npx",
       "args": [
         "shadcn@latest",
         "mcp"
+      ]
+    },
+    "Railway": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@railway/mcp-server"
       ]
     }
   }

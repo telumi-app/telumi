@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 
+import '@/lib/polyfills';
 import './globals.css';
 
 export const metadata: Metadata = {
