@@ -64,8 +64,8 @@ export function ScheduleWizard() {
     () => new Date().toISOString().split('T')[0],
   );
   const [endDate, setEndDate] = React.useState('');
-  const [startTime, setStartTime] = React.useState('08:00');
-  const [endTime, setEndTime] = React.useState('22:00');
+  const [startTime, setStartTime] = React.useState('00:00');
+  const [endTime, setEndTime] = React.useState('23:59');
   const [frequencyPerHour, setFrequencyPerHour] = React.useState(1);
   const [daysOfWeek, setDaysOfWeek] = React.useState<number[]>([0, 1, 2, 3, 4, 5, 6]);
   const [selectedDeviceIds, setSelectedDeviceIds] = React.useState<string[]>([]);

@@ -104,10 +104,10 @@ export default function EditCampaignPage() {
   const [newScheduleName, setNewScheduleName] = React.useState('');
   const [newScheduleStartDate, setNewScheduleStartDate] = React.useState('');
   const [newScheduleEndDate, setNewScheduleEndDate] = React.useState('');
-  const [newScheduleStartTime, setNewScheduleStartTime] = React.useState('08:00');
-  const [newScheduleEndTime, setNewScheduleEndTime] = React.useState('18:00');
+  const [newScheduleStartTime, setNewScheduleStartTime] = React.useState('00:00');
+  const [newScheduleEndTime, setNewScheduleEndTime] = React.useState('23:59');
   const [newScheduleFrequency, setNewScheduleFrequency] = React.useState(4);
-  const [newScheduleDays, setNewScheduleDays] = React.useState<number[]>([1, 2, 3, 4, 5]);
+  const [newScheduleDays, setNewScheduleDays] = React.useState<number[]>([0, 1, 2, 3, 4, 5, 6]);
   const [newSchedulePriority, setNewSchedulePriority] = React.useState(0);
   const [newScheduleDevices, setNewScheduleDevices] = React.useState<string[]>([]);
 
@@ -261,7 +261,7 @@ export default function EditCampaignPage() {
     setHelper('');
 
     try {
-      await schedulesApi.create({
+      const created = await schedulesApi.create({
         name: newScheduleName.trim() || `${campaign.name} - Programação`,
         sourceType: 'CAMPAIGN',
         campaignId,
@@ -275,7 +275,11 @@ export default function EditCampaignPage() {
         deviceIds: newScheduleDevices,
       });
 
-      setHelper('Programação criada com sucesso.');
+      if (created.data?.id) {
+        await schedulesApi.publish(created.data.id);
+      }
+
+      setHelper('Programação criada e publicada com sucesso.');
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao criar programação.');
