@@ -76,16 +76,22 @@ function isCacheAvailable(): boolean {
  * Skips URLs already in cache. Silently ignores failures.
  * Respects the current cache mode — in streaming mode, does nothing.
  */
-export async function precacheAssets(urls: string[]): Promise<void> {
+export async function precacheAssets(
+  urls: string[],
+  options?: { limit?: number },
+): Promise<void> {
   if (!isCacheAvailable() || urls.length === 0) return;
 
   const maxEntries = getMaxEntries();
   if (maxEntries <= 0) return; // streaming mode
 
   // In limited mode, only cache the first N URLs
-  const urlsToCache = _currentCacheMode === 'limited'
+  const adaptiveUrls = _currentCacheMode === 'limited'
     ? urls.slice(0, LIMITED_MAX_ENTRIES)
     : urls;
+  const urlsToCache = options?.limit != null
+    ? adaptiveUrls.slice(0, Math.max(0, options.limit))
+    : adaptiveUrls;
 
   try {
     const cache = await caches.open(CACHE_NAME);
@@ -131,6 +137,11 @@ export async function getCachedResponse(url: string): Promise<Response | undefin
   } catch {
     return undefined;
   }
+}
+
+export async function isAssetCached(url: string): Promise<boolean> {
+  const response = await getCachedResponse(url);
+  return Boolean(response);
 }
 
 /**

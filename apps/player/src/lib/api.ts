@@ -112,6 +112,24 @@ export type HeartbeatPayload = {
     isOffline?: boolean;
 };
 
+export type DeviceManifestSchemaVersion = 'v1' | 'v2';
+
+export type ManifestAssetState = 'PROCESSING' | 'READY' | 'READY_WITH_WARNINGS' | 'REJECTED';
+
+export type PlaybackVariant = {
+    id: string;
+    url: string;
+    delivery: 'MP4' | 'HLS' | 'IMAGE';
+    mimeType?: string | null;
+    width?: number | null;
+    height?: number | null;
+    bitrateKbps?: number | null;
+    hash?: string | null;
+    sizeBytes?: number | null;
+    codec?: string | null;
+    isDefault?: boolean;
+};
+
 export type ManifestItem = {
     assetId: string;
     campaignId?: string;
@@ -120,11 +138,68 @@ export type ManifestItem = {
     url: string;
 };
 
+export type ManifestTimelineItem = {
+    assetId: string;
+    campaignId?: string;
+    mediaType: 'IMAGE' | 'VIDEO';
+    durationMs: number;
+    validFrom?: string | null;
+    validUntil?: string | null;
+    assetState?: ManifestAssetState;
+    expectedLocalKey?: string | null;
+    hash?: string | null;
+    sizeBytes?: number | null;
+    fallbackAssetId?: string | null;
+    variants: PlaybackVariant[];
+};
+
 export type PlaybackManifest = {
+    manifestSchemaVersion: DeviceManifestSchemaVersion;
     manifestVersion: string | null;
     scheduleId: string | null;
+    resolvedAt: string;
+    validFrom: string | null;
+    validUntil: string | null;
     items: ManifestItem[];
+    timeline: ManifestTimelineItem[];
 };
+
+function normalizeManifest(manifest: PlaybackManifest): PlaybackManifest {
+    const timeline: ManifestTimelineItem[] = manifest.timeline?.length
+        ? manifest.timeline
+        : manifest.items.map((item) => ({
+            assetId: item.assetId,
+            campaignId: item.campaignId,
+            mediaType: item.mediaType,
+            durationMs: item.durationMs,
+            validFrom: manifest.validFrom ?? null,
+            validUntil: manifest.validUntil ?? null,
+            assetState: 'READY' as const,
+            expectedLocalKey: item.assetId,
+            hash: null,
+            sizeBytes: null,
+            fallbackAssetId: null,
+            variants: [
+                {
+                    id: `${item.assetId}:legacy`,
+                    url: item.url,
+                    delivery: (item.mediaType === 'VIDEO' ? 'MP4' : 'IMAGE') as PlaybackVariant['delivery'],
+                    isDefault: true,
+                },
+            ],
+        }));
+
+    return {
+        manifestSchemaVersion: manifest.manifestSchemaVersion ?? 'v1',
+        manifestVersion: manifest.manifestVersion ?? null,
+        scheduleId: manifest.scheduleId ?? null,
+        resolvedAt: manifest.resolvedAt ?? new Date().toISOString(),
+        validFrom: manifest.validFrom ?? null,
+        validUntil: manifest.validUntil ?? null,
+        items: manifest.items ?? [],
+        timeline,
+    };
+}
 
 function resolveErrorMessage(statusCode: number, serverMessage: string | string[]): string {
     const msg = Array.isArray(serverMessage) ? serverMessage.join(' ') : serverMessage;
@@ -263,7 +338,10 @@ export const api = {
             const response = await fetchWithApiPrefixFallback('/devices/public/manifest', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ deviceToken }),
+                body: JSON.stringify({
+                    deviceToken,
+                    supportedManifestSchemaVersions: ['v2', 'v1'],
+                }),
                 cache: 'no-store',
             });
 
@@ -282,15 +360,16 @@ export const api = {
 
             // Cache the successful manifest for offline use
             _isOffline = false;
-            cacheManifest(body.data);
-            return body.data;
+            const normalized = normalizeManifest(body.data);
+            cacheManifest(normalized);
+            return normalized;
         } catch (error) {
             // On network failure, try the offline cache
             if (!(error instanceof ApiRequestError) || (error.statusCode >= 500)) {
                 const cached = getCachedManifest();
                 if (cached) {
                     _isOffline = true;
-                    return cached;
+                    return normalizeManifest(cached);
                 }
             }
             throw error;

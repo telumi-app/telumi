@@ -2,11 +2,17 @@
 
 import * as React from 'react';
 import { QRCodeSVG } from 'qrcode.react';
-import { api, ApiRequestError, isOfflineMode } from '@/lib/api';
+import { api, ApiRequestError, isOfflineMode, type DeviceManifestSchemaVersion } from '@/lib/api';
 import { precacheAssets, detectCacheMode, getCacheMode } from '@/lib/media-cache';
 import { DualMediaPlayer } from '@/components/dual-media-player';
 import { PlaybackOverlay } from '@/components/playback-overlay';
-import { getSchedulePosition } from '@/lib/scheduler';
+import { detectDeviceProfile, type DeviceProfile } from '@/lib/device-profile';
+import {
+  buildRuntimePlaybackItems,
+  resolveStartingPlaybackIndex,
+  type RuntimePlaybackItem,
+} from '@/lib/manifest-executor';
+import { signPlayPayload } from '@/lib/proof-of-play';
 import { PlaybackWatchdog } from '@/lib/watchdog';
 import { registerServiceWorker } from '@/lib/sw-register';
 import { getUptimeMs, PLAYER_VERSION } from '@/lib/boot-time';
@@ -49,26 +55,26 @@ export default function PlayerHome() {
   const [isLoading, setIsLoading] = React.useState(false);
   const [errorMsg, setErrorMsg] = React.useState('');
   const [paired, setPaired] = React.useState<PairedDevice | null>(null);
+  const [deviceProfile, setDeviceProfile] = React.useState<DeviceProfile | null>(null);
+  const [manifestSchemaVersion, setManifestSchemaVersion] = React.useState<DeviceManifestSchemaVersion>('v1');
   const [manifestVersion, setManifestVersion] = React.useState<string | null>(null);
-  const [playlistItems, setPlaylistItems] = React.useState<Array<{
-    assetId: string;
-    campaignId?: string;
-    mediaType: 'IMAGE' | 'VIDEO';
-    durationMs: number;
-    url: string;
-  }>>([]);
+  const [playlistItems, setPlaylistItems] = React.useState<RuntimePlaybackItem[]>([]);
   const [currentIndex, setCurrentIndex] = React.useState(0);
   const [currentStartedAt, setCurrentStartedAt] = React.useState<string | null>(null);
+  const [pendingAdvance, setPendingAdvance] = React.useState(false);
+  const [nextReadyPlaybackKey, setNextReadyPlaybackKey] = React.useState<string | null>(null);
   const videoFallbackTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const videoCompletedKeyRef = React.useRef<string | null>(null);
   const restoreCurrentTimeRef = React.useRef<number | null>(null);
   const lastProgressPersistAtRef = React.useRef<number>(0);
   const videoElRef = React.useRef<HTMLVideoElement | null>(null);
+  const previousOfflineModeRef = React.useRef<boolean>(false);
 
   // ── Service Worker + Adaptive Cache (boot-time init) ─────────────
   React.useEffect(() => {
     void registerServiceWorker();
     void detectCacheMode();
+    setDeviceProfile(detectDeviceProfile());
   }, []);
 
   // ── Watchdog ─────────────────────────────────────────────────────
@@ -153,7 +159,10 @@ export default function PlayerHome() {
     localStorage.removeItem(PAIRED_DEVICE_KEY);
     setPaired(null);
     setPlaylistItems([]);
+    setManifestSchemaVersion('v1');
     setManifestVersion(null);
+    setPendingAdvance(false);
+    setNextReadyPlaybackKey(null);
     if (message) {
       setErrorMsg(message);
     }
@@ -326,7 +335,7 @@ export default function PlayerHome() {
   }, [paired, playlistItems.length, manifestVersion]);
 
   React.useEffect(() => {
-    if (!paired) return;
+    if (!paired || !deviceProfile) return;
 
     let cancelled = false;
 
@@ -338,34 +347,68 @@ export default function PlayerHome() {
         const manifest = await api.getManifest(deviceToken);
         if (cancelled) return;
 
-        setManifestVersion(manifest.manifestVersion);
-        setPlaylistItems(manifest.items);
+        const runtimeItems = await buildRuntimePlaybackItems(manifest, deviceProfile);
 
-        // Pre-cache upcoming assets in browser Cache API
-        void precacheAssets(manifest.items.map((item) => item.url));
+        setManifestSchemaVersion(manifest.manifestSchemaVersion);
+        setManifestVersion(manifest.manifestVersion);
+        setPlaylistItems(runtimeItems);
+
+        const urlsToCache = runtimeItems.flatMap((item) => {
+          const urls = [item.url];
+          if (item.fallbackUrl) {
+            urls.push(item.fallbackUrl);
+          }
+          return urls;
+        });
+
+        void precacheAssets(urlsToCache, {
+          limit: deviceProfile.maxPreloadItems + 1,
+        });
 
         const persisted = readPlaybackState();
-        setCurrentIndex((prev) => {
-          if (manifest.items.length === 0) return 0;
-
-          if (persisted) {
-            const persistedIndex = manifest.items.findIndex((item) => item.assetId === persisted.assetId);
-            if (persistedIndex >= 0) {
-              if (persisted.mediaType === 'VIDEO' && typeof persisted.currentTimeSec === 'number') {
-                restoreCurrentTimeRef.current = Math.max(0, persisted.currentTimeSec);
-              } else {
-                restoreCurrentTimeRef.current = null;
-              }
-              setCurrentStartedAt(persisted.startedAt);
-              return persistedIndex;
-            }
-          }
-
-          // Deterministic scheduler: sync to wall-clock position
-          restoreCurrentTimeRef.current = null;
-          const pos = getSchedulePosition(manifest.items);
-          return pos.index;
+        const nextStart = resolveStartingPlaybackIndex({
+          manifest,
+          items: runtimeItems,
+          persisted,
         });
+
+        restoreCurrentTimeRef.current = nextStart.restoreCurrentTimeSec;
+        setCurrentStartedAt(
+          persisted && runtimeItems[nextStart.index]?.assetId === persisted.assetId
+            ? persisted.startedAt
+            : null,
+        );
+        setCurrentIndex(nextStart.index);
+        setPendingAdvance(false);
+
+        const offlineNow = isOfflineMode();
+        if (offlineNow !== previousOfflineModeRef.current) {
+          previousOfflineModeRef.current = offlineNow;
+          void api.sendTelemetryEvent({
+            deviceToken,
+            eventType: offlineNow ? 'NETWORK_DOWN' : 'NETWORK_RESTORED',
+            severity: offlineNow ? 'WARNING' : 'INFO',
+            occurredAt: new Date().toISOString(),
+            metadata: {
+              manifestSchemaVersion: manifest.manifestSchemaVersion,
+              manifestVersion: manifest.manifestVersion,
+              deviceTier: deviceProfile.tier,
+            },
+          });
+        }
+
+        if (runtimeItems.length === 0) {
+          void api.sendTelemetryEvent({
+            deviceToken,
+            eventType: 'NO_CONTENT_UPDATE',
+            severity: 'WARNING',
+            occurredAt: new Date().toISOString(),
+            metadata: {
+              manifestSchemaVersion: manifest.manifestSchemaVersion,
+              manifestVersion: manifest.manifestVersion,
+            },
+          });
+        }
       } catch (error) {
         if (isTokenInvalidError(error)) {
           clearPairing('A conexão desta tela expirou. Faça o pareamento novamente no painel.');
@@ -383,24 +426,106 @@ export default function PlayerHome() {
       cancelled = true;
       clearInterval(intervalId);
     };
-  }, [paired, clearPairing, readPlaybackState]);
+  }, [paired, deviceProfile, clearPairing, readPlaybackState]);
 
   const currentItem = playlistItems.length > 0 ? playlistItems[currentIndex] : null;
   const nextItem = playlistItems.length > 1
     ? playlistItems[(currentIndex + 1) % playlistItems.length]
     : null;
 
-  const goToNextItem = React.useCallback(() => {
+  const advanceToNextItem = React.useCallback(() => {
     if (playlistItems.length === 0) return;
     restoreCurrentTimeRef.current = null;
     writePlaybackState(null);
+    setPendingAdvance(false);
+    setNextReadyPlaybackKey(null);
     setCurrentIndex((prev) => (prev + 1) % playlistItems.length);
   }, [playlistItems.length, writePlaybackState]);
+
+  const goToNextItem = React.useCallback(() => {
+    if (playlistItems.length === 0) return;
+
+    if (!nextItem || nextReadyPlaybackKey === nextItem.playbackKey) {
+      advanceToNextItem();
+      return;
+    }
+
+    setPendingAdvance(true);
+  }, [advanceToNextItem, nextItem, nextReadyPlaybackKey, playlistItems.length]);
+
+  React.useEffect(() => {
+    if (!pendingAdvance || !nextItem) return;
+    if (nextReadyPlaybackKey !== nextItem.playbackKey) return;
+
+    advanceToNextItem();
+  }, [advanceToNextItem, nextItem, nextReadyPlaybackKey, pendingAdvance]);
+
+  const submitPlayEvent = React.useCallback(async (item: RuntimePlaybackItem, startedAt: string, endedAt: string, durationMs: number) => {
+    const deviceToken = localStorage.getItem(DEVICE_TOKEN_KEY);
+    if (!deviceToken) return;
+
+    const playId = `${item.assetId}:${Date.now()}`;
+    const deviceSecret = localStorage.getItem(DEVICE_SECRET_KEY) ?? '';
+    const signature = await signPlayPayload(
+      deviceSecret,
+      `${playId}:${startedAt}:${endedAt}:${durationMs}`,
+    );
+
+    void api.sendPlayEvent({
+      deviceToken,
+      playId,
+      campaignId: item.campaignId,
+      assetId: item.assetId,
+      startedAt,
+      endedAt,
+      durationMs,
+      manifestVersion: manifestVersion ?? undefined,
+      assetHash: item.assetHash ?? undefined,
+      hmacSignature: signature,
+    });
+  }, [manifestVersion]);
+
+  const switchCurrentItemToFallback = React.useCallback(() => {
+    if (!currentItem?.fallbackUrl || currentItem.fallbackUrl === currentItem.url) {
+      return false;
+    }
+
+    setPlaylistItems((prev) => prev.map((item, index) => {
+      if (index !== currentIndex) return item;
+
+      return {
+        ...item,
+        url: currentItem.fallbackUrl!,
+        playbackKey: `${item.assetId}:${currentItem.fallbackVariantId ?? item.selectedVariantId}:fallback`,
+        selectedVariantId: currentItem.fallbackVariantId ?? item.selectedVariantId,
+        selectedVariantDelivery: currentItem.fallbackUrl?.includes('.m3u8') ? 'HLS' : item.selectedVariantDelivery,
+        queueState: 'FALLBACK_READY',
+      };
+    }));
+
+    const deviceToken = localStorage.getItem(DEVICE_TOKEN_KEY);
+    if (deviceToken) {
+      void api.sendTelemetryEvent({
+        deviceToken,
+        eventType: 'DOWNLOAD_FAILED',
+        severity: 'WARNING',
+        occurredAt: new Date().toISOString(),
+        metadata: {
+          assetId: currentItem.assetId,
+          fallbackVariantId: currentItem.fallbackVariantId,
+          manifestVersion,
+          manifestSchemaVersion,
+        },
+      });
+    }
+
+    return true;
+  }, [currentIndex, currentItem, manifestSchemaVersion, manifestVersion]);
 
   const completeCurrentVideo = React.useCallback(() => {
     if (!currentItem || currentItem.mediaType !== 'VIDEO') return;
 
-    const completionKey = `${currentItem.assetId}:${currentIndex}`;
+    const completionKey = `${currentItem.playbackKey}:${currentIndex}`;
     if (videoCompletedKeyRef.current === completionKey) {
       return;
     }
@@ -413,23 +538,12 @@ export default function PlayerHome() {
 
     const endedAt = new Date().toISOString();
     const startedAt = currentStartedAt ?? new Date(Date.now() - currentItem.durationMs).toISOString();
-    const deviceToken = localStorage.getItem(DEVICE_TOKEN_KEY);
+    const durationMs = Math.max(1000, new Date(endedAt).getTime() - new Date(startedAt).getTime());
 
-    if (deviceToken) {
-      void api.sendPlayEvent({
-        deviceToken,
-        playId: `${currentItem.assetId}:${Date.now()}`,
-        campaignId: currentItem.campaignId,
-        assetId: currentItem.assetId,
-        startedAt,
-        endedAt,
-        durationMs: Math.max(1000, new Date(endedAt).getTime() - new Date(startedAt).getTime()),
-        manifestVersion: manifestVersion ?? undefined,
-      });
-    }
+    void submitPlayEvent(currentItem, startedAt, endedAt, durationMs);
 
     goToNextItem();
-  }, [currentItem, currentIndex, currentStartedAt, goToNextItem, manifestVersion]);
+  }, [currentItem, currentIndex, currentStartedAt, goToNextItem, submitPlayEvent]);
 
   React.useEffect(() => {
     if (!paired || !currentItem || currentItem.mediaType !== 'IMAGE') return;
@@ -455,20 +569,7 @@ export default function PlayerHome() {
 
     const timeoutId = setTimeout(() => {
       const endedAt = new Date().toISOString();
-      const deviceToken = localStorage.getItem(DEVICE_TOKEN_KEY);
-
-      if (deviceToken) {
-        void api.sendPlayEvent({
-          deviceToken,
-          playId: `${currentItem.assetId}:${Date.now()}`,
-          campaignId: currentItem.campaignId,
-          assetId: currentItem.assetId,
-          startedAt,
-          endedAt,
-          durationMs: currentItem.durationMs,
-          manifestVersion: manifestVersion ?? undefined,
-        });
-      }
+      void submitPlayEvent(currentItem, startedAt, endedAt, currentItem.durationMs);
 
       goToNextItem();
     }, remainingMs);
@@ -476,7 +577,7 @@ export default function PlayerHome() {
     return () => {
       clearTimeout(timeoutId);
     };
-  }, [paired, currentItem, goToNextItem, manifestVersion, readPlaybackState, writePlaybackState]);
+  }, [paired, currentItem, goToNextItem, readPlaybackState, submitPlayEvent, writePlaybackState]);
 
   const handleVideoStart = React.useCallback(() => {
     const startedAt = new Date().toISOString();
@@ -519,6 +620,14 @@ export default function PlayerHome() {
     completeCurrentVideo();
   }, [completeCurrentVideo]);
 
+  const handlePlaybackError = React.useCallback(() => {
+    if (switchCurrentItemToFallback()) {
+      return;
+    }
+
+    goToNextItem();
+  }, [goToNextItem, switchCurrentItemToFallback]);
+
   React.useEffect(() => {
     if (!paired || !currentItem || currentItem.mediaType !== 'VIDEO') {
       if (videoFallbackTimeoutRef.current) {
@@ -532,7 +641,7 @@ export default function PlayerHome() {
 
     const fallbackMs = Math.max(2000, currentItem.durationMs + 1500);
     videoFallbackTimeoutRef.current = setTimeout(() => {
-      completeCurrentVideo();
+      handlePlaybackError();
     }, fallbackMs);
 
     return () => {
@@ -541,7 +650,7 @@ export default function PlayerHome() {
         videoFallbackTimeoutRef.current = null;
       }
     };
-  }, [paired, currentItem, completeCurrentVideo]);
+  }, [paired, currentItem, handlePlaybackError]);
 
   // ── Watchdog: monitor playback health ────────────────────────────
   React.useEffect(() => {
@@ -581,7 +690,10 @@ export default function PlayerHome() {
             onPlay={handleVideoStart}
             onTimeUpdate={handleVideoTimeUpdate}
             onEnded={handleVideoEnd}
-            onError={handleVideoEnd}
+            onError={handlePlaybackError}
+            onNextReadyChange={({ playbackKey, ready }) => {
+              setNextReadyPlaybackKey(ready ? playbackKey : null);
+            }}
             videoElRef={videoElRef as React.MutableRefObject<HTMLVideoElement | null>}
           />
 

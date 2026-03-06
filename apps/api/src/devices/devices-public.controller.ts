@@ -1,7 +1,7 @@
 import { Body, Controller, Post, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { SkipThrottle, Throttle } from '@nestjs/throttler';
-import { IsISO8601, IsNotEmpty, IsOptional, IsString, Length, MaxLength } from 'class-validator';
+import { IsArray, IsISO8601, IsNotEmpty, IsOptional, IsString, Length, MaxLength } from 'class-validator';
 
 import { DevicesService } from './devices.service';
 import { DeviceTelemetryEventDto } from './dto/device-telemetry-event.dto';
@@ -45,6 +45,11 @@ class DeviceManifestDto {
     @IsString({ message: 'O token do dispositivo deve ser uma string.' })
     @IsNotEmpty({ message: 'O token do dispositivo é obrigatório.' })
     deviceToken!: string;
+
+    @IsOptional()
+    @IsArray({ message: 'supportedManifestSchemaVersions deve ser um array.' })
+    @IsString({ each: true, message: 'Cada versão do manifest deve ser uma string.' })
+    supportedManifestSchemaVersions?: string[];
 }
 
 @ApiTags('Devices Public')
@@ -83,7 +88,10 @@ export class DevicesPublicController {
     @Throttle({ short: { ttl: 60, limit: 20 }, long: { ttl: 600, limit: 200 } })
     @ApiOperation({ summary: 'Obtém manifesto de reprodução para o player' })
     getManifest(@Body() dto: DeviceManifestDto) {
-        return this.devicesService.getPlaybackManifestByToken(dto.deviceToken);
+        return this.devicesService.getPlaybackManifestByToken(
+            dto.deviceToken,
+            dto.supportedManifestSchemaVersions,
+        );
     }
 
     @Post('telemetry')

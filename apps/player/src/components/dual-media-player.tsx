@@ -1,10 +1,11 @@
 'use client';
+/* eslint-disable @next/next/no-img-element */
 
 import * as React from 'react';
 import Hls, { type HlsConfig } from 'hls.js';
+
 import { BufferBar } from '@/components/buffer-bar';
 
-// ── HLS config (shared with use-hls-player.ts) ─────────────────────
 const HLS_CONFIG: Partial<HlsConfig> = {
   enableWorker: true,
   lowLatencyMode: false,
@@ -36,10 +37,9 @@ const HLS_CONFIG: Partial<HlsConfig> = {
   },
 };
 
-// ── Types ────────────────────────────────────────────────────────────
-
 export type PlaylistItem = {
   assetId: string;
+  playbackKey: string;
   campaignId?: string;
   mediaType: 'IMAGE' | 'VIDEO';
   durationMs: number;
@@ -49,6 +49,8 @@ export type PlaylistItem = {
 type SlotState = {
   item: PlaylistItem | null;
   loaded: boolean;
+  metadataReady: boolean;
+  readyForPlayback: boolean;
 };
 
 type DualMediaPlayerProps = {
@@ -60,11 +62,9 @@ type DualMediaPlayerProps = {
   onTimeUpdate: () => void;
   onEnded: () => void;
   onError: () => void;
-  /** Expose the active video element for BufferBar */
+  onNextReadyChange?: (payload: { assetId: string | null; playbackKey: string | null; ready: boolean }) => void;
   videoElRef?: React.MutableRefObject<HTMLVideoElement | null>;
 };
-
-// ── Helpers ──────────────────────────────────────────────────────────
 
 function isHlsUrl(url: string): boolean {
   return /\.m3u8($|\?)/.test(url);
@@ -76,19 +76,9 @@ function cleanupVideo(video: HTMLVideoElement, hls: Hls | null): void {
   }
   video.pause();
   video.removeAttribute('src');
-  video.load(); // resets MediaSource, releases memory
+  video.load();
 }
 
-// ── Component ────────────────────────────────────────────────────────
-
-/**
- * Dual-slot media player: eliminates black frames on item transitions.
- *
- * Two full-screen containers (slot A & B) always exist in the DOM.
- * The active slot is visible; the preload slot sits hidden behind it
- * with the next item pre-loaded.  On advance the slots swap instantly
- * — the preloaded content is already decoded and ready.
- */
 export const DualMediaPlayer = React.memo(function DualMediaPlayer({
   currentItem,
   nextItem,
@@ -98,20 +88,19 @@ export const DualMediaPlayer = React.memo(function DualMediaPlayer({
   onTimeUpdate,
   onEnded,
   onError,
+  onNextReadyChange,
   videoElRef,
 }: DualMediaPlayerProps) {
-  // ── Refs ──────────────────────────────────────────────────
   const videoARef = React.useRef<HTMLVideoElement | null>(null);
   const videoBRef = React.useRef<HTMLVideoElement | null>(null);
   const hlsARef = React.useRef<Hls | null>(null);
   const hlsBRef = React.useRef<Hls | null>(null);
+  const cleanupARef = React.useRef<(() => void) | null>(null);
+  const cleanupBRef = React.useRef<(() => void) | null>(null);
 
-  // Track which slot is active and what each slot holds
   const [activeSlot, setActiveSlot] = React.useState<'A' | 'B'>('A');
-  const slotAStateRef = React.useRef<SlotState>({ item: null, loaded: false });
-  const slotBStateRef = React.useRef<SlotState>({ item: null, loaded: false });
-
-  // Track the last index we rendered to detect transitions
+  const slotAStateRef = React.useRef<SlotState>({ item: null, loaded: false, metadataReady: false, readyForPlayback: false });
+  const slotBStateRef = React.useRef<SlotState>({ item: null, loaded: false, metadataReady: false, readyForPlayback: false });
   const prevIndexRef = React.useRef<number>(currentIndex);
   const startAtRef = React.useRef<number | null>(startAt ?? null);
   const recoverAttemptRef = React.useRef(0);
@@ -120,187 +109,203 @@ export const DualMediaPlayer = React.memo(function DualMediaPlayer({
     startAtRef.current = startAt ?? null;
   }, [startAt]);
 
-  // ── Get refs for active / preload slots ───────────────────
   const getSlotRefs = React.useCallback(
     (slot: 'A' | 'B') => ({
       videoRef: slot === 'A' ? videoARef : videoBRef,
       hlsRef: slot === 'A' ? hlsARef : hlsBRef,
+      cleanupRef: slot === 'A' ? cleanupARef : cleanupBRef,
       stateRef: slot === 'A' ? slotAStateRef : slotBStateRef,
     }),
     [],
   );
 
-  const activeRefs = React.useMemo(
-    () => getSlotRefs(activeSlot),
-    [activeSlot, getSlotRefs],
-  );
-
+  const activeRefs = React.useMemo(() => getSlotRefs(activeSlot), [activeSlot, getSlotRefs]);
   const preloadSlot = activeSlot === 'A' ? 'B' : 'A';
-  const preloadRefs = React.useMemo(
-    () => getSlotRefs(preloadSlot),
-    [preloadSlot, getSlotRefs],
-  );
+  const preloadRefs = React.useMemo(() => getSlotRefs(preloadSlot), [preloadSlot, getSlotRefs]);
 
-  // ── Sync external video ref ───────────────────────────────
+  const notifyReady = React.useCallback((item: PlaylistItem | null, ready: boolean) => {
+    onNextReadyChange?.({
+      assetId: item?.assetId ?? null,
+      playbackKey: item?.playbackKey ?? null,
+      ready,
+    });
+  }, [onNextReadyChange]);
+
+  const updateWarmState = React.useCallback((slot: 'A' | 'B', item: PlaylistItem | null, ready: boolean) => {
+    if (slot === preloadSlot) {
+      notifyReady(item, ready);
+    }
+  }, [notifyReady, preloadSlot]);
+
   React.useEffect(() => {
     if (videoElRef) {
       videoElRef.current = activeRefs.videoRef.current;
     }
-  }, [activeSlot, videoElRef, activeRefs]);
+  }, [activeRefs, videoElRef]);
 
-  // ── Load a video item into a specific slot ─────────────────
-  const loadVideoIntoSlot = React.useCallback(
-    (
-      slot: 'A' | 'B',
-      item: PlaylistItem,
-      seekTo?: number | null,
-      autoplay = true,
-    ) => {
-      const { videoRef, hlsRef, stateRef } = getSlotRefs(slot);
-      const video = videoRef.current;
-      if (!video) return;
+  const attachWarmupListeners = React.useCallback((params: {
+    slot: 'A' | 'B';
+    video: HTMLVideoElement;
+    item: PlaylistItem;
+    seekTo?: number | null;
+    autoplay: boolean;
+  }) => {
+    const { slot, video, item, seekTo, autoplay } = params;
+    const { stateRef, cleanupRef } = getSlotRefs(slot);
 
-      // Cleanup previous
-      cleanupVideo(video, hlsRef.current);
-      hlsRef.current = null;
-      stateRef.current = { item, loaded: false };
+    cleanupRef.current?.();
 
-      const src = item.url;
+    const maybeMarkReady = () => {
+      if (stateRef.current.item?.playbackKey !== item.playbackKey) return;
+      if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
 
-      if (item.mediaType === 'VIDEO' && isHlsUrl(src) && Hls.isSupported()) {
-        const hls = new Hls(HLS_CONFIG);
-        hlsRef.current = hls;
+      stateRef.current.loaded = true;
+      stateRef.current.readyForPlayback = true;
+      updateWarmState(slot, item, true);
 
-        hls.loadSource(src);
-        hls.attachMedia(video);
-
-        hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          stateRef.current.loaded = true;
-          if (seekTo != null) {
-            try { video.currentTime = seekTo; } catch { /* ignore */ }
-          }
-          if (autoplay) {
-            void video.play().catch(() => { /* autoplay blocked */ });
-          }
-        });
-
-        // Escalated error recovery
-        hls.on(Hls.Events.ERROR, (_event, data) => {
-          if (!data.fatal) return;
-          const attempt = recoverAttemptRef.current;
-          switch (data.type) {
-            case Hls.ErrorTypes.NETWORK_ERROR:
-              hls.startLoad();
-              break;
-            case Hls.ErrorTypes.MEDIA_ERROR:
-              if (attempt === 0) hls.recoverMediaError();
-              else if (attempt === 1) { hls.swapAudioCodec(); hls.recoverMediaError(); }
-              else { hls.detachMedia(); hls.attachMedia(video); hls.loadSource(src); }
-              recoverAttemptRef.current = attempt + 1;
-              break;
-            default:
-              hls.destroy();
-              hlsRef.current = null;
-              onError();
-              break;
-          }
-        });
-
-        hls.on(Hls.Events.FRAG_LOADED, () => { recoverAttemptRef.current = 0; });
-      } else if (item.mediaType === 'VIDEO') {
-        // Native HLS (Safari) or mp4
-        video.src = src;
-        const onLoaded = () => {
-          stateRef.current.loaded = true;
-          if (seekTo != null) {
-            try { video.currentTime = seekTo; } catch { /* ignore */ }
-          }
-          if (autoplay) {
-            void video.play().catch(() => { /* autoplay blocked */ });
-          }
-        };
-        video.addEventListener('loadedmetadata', onLoaded, { once: true });
+      if (autoplay) {
+        void video.play().catch(() => { /* autoplay blocked */ });
       }
-    },
-    [getSlotRefs, onError],
-  );
+    };
 
-  // ── Load current item into active slot (initial + direct changes) ──
+    const handleLoadedMetadata = () => {
+      if (stateRef.current.item?.playbackKey !== item.playbackKey) return;
+      stateRef.current.metadataReady = true;
+      if (seekTo != null) {
+        try { video.currentTime = seekTo; } catch { /* ignore */ }
+      }
+      maybeMarkReady();
+    };
+
+    const handleLoadedData = () => {
+      maybeMarkReady();
+    };
+
+    const handleCanPlay = () => {
+      maybeMarkReady();
+    };
+
+    video.addEventListener('loadedmetadata', handleLoadedMetadata);
+    video.addEventListener('loadeddata', handleLoadedData);
+    video.addEventListener('canplay', handleCanPlay);
+
+    cleanupRef.current = () => {
+      video.removeEventListener('loadedmetadata', handleLoadedMetadata);
+      video.removeEventListener('loadeddata', handleLoadedData);
+      video.removeEventListener('canplay', handleCanPlay);
+      cleanupRef.current = null;
+    };
+  }, [getSlotRefs, updateWarmState]);
+
+  const loadVideoIntoSlot = React.useCallback((slot: 'A' | 'B', item: PlaylistItem, seekTo?: number | null, autoplay = true) => {
+    const { videoRef, hlsRef, stateRef, cleanupRef } = getSlotRefs(slot);
+    const video = videoRef.current;
+    if (!video) return;
+
+    cleanupRef.current?.();
+    cleanupVideo(video, hlsRef.current);
+    hlsRef.current = null;
+    stateRef.current = { item, loaded: false, metadataReady: false, readyForPlayback: false };
+    updateWarmState(slot, item, false);
+
+    attachWarmupListeners({ slot, video, item, seekTo, autoplay });
+
+    if (item.mediaType === 'VIDEO' && isHlsUrl(item.url) && Hls.isSupported()) {
+      const hls = new Hls(HLS_CONFIG);
+      hlsRef.current = hls;
+      hls.loadSource(item.url);
+      hls.attachMedia(video);
+
+      hls.on(Hls.Events.ERROR, (_event, data) => {
+        if (!data.fatal) return;
+        const attempt = recoverAttemptRef.current;
+        switch (data.type) {
+          case Hls.ErrorTypes.NETWORK_ERROR:
+            hls.startLoad();
+            break;
+          case Hls.ErrorTypes.MEDIA_ERROR:
+            if (attempt === 0) hls.recoverMediaError();
+            else if (attempt === 1) {
+              hls.swapAudioCodec();
+              hls.recoverMediaError();
+            } else {
+              hls.detachMedia();
+              hls.attachMedia(video);
+              hls.loadSource(item.url);
+            }
+            recoverAttemptRef.current = attempt + 1;
+            break;
+          default:
+            hls.destroy();
+            hlsRef.current = null;
+            onError();
+            break;
+        }
+      });
+
+      hls.on(Hls.Events.FRAG_LOADED, () => {
+        recoverAttemptRef.current = 0;
+      });
+      return;
+    }
+
+    video.src = item.url;
+  }, [attachWarmupListeners, getSlotRefs, onError, updateWarmState]);
+
   React.useEffect(() => {
     if (!currentItem) return;
 
-    const { stateRef } = activeRefs;
-
-    // Already showing this item? Skip.
-    if (stateRef.current.item?.assetId === currentItem.assetId) return;
+    const { stateRef } = getSlotRefs(activeSlot);
+    if (stateRef.current.item?.playbackKey === currentItem.playbackKey) return;
 
     if (currentItem.mediaType === 'VIDEO') {
       loadVideoIntoSlot(activeSlot, currentItem, startAtRef.current, true);
       startAtRef.current = null;
     } else {
-      // Image: just update state, rendering handled by JSX
-      stateRef.current = { item: currentItem, loaded: true };
+      stateRef.current = { item: currentItem, loaded: true, metadataReady: true, readyForPlayback: true };
     }
-  }, [currentItem, activeSlot, activeRefs, loadVideoIntoSlot]);
+  }, [activeSlot, currentItem, getSlotRefs, loadVideoIntoSlot]);
 
-  // ── Preload next item into preload slot ────────────────────
   React.useEffect(() => {
-    if (!nextItem) return;
+    if (!nextItem) {
+      notifyReady(null, false);
+      return;
+    }
 
-    const { stateRef } = preloadRefs;
-
-    // Already preloaded? Skip.
-    if (stateRef.current.item?.assetId === nextItem.assetId) return;
+    const { stateRef } = getSlotRefs(preloadSlot);
+    if (stateRef.current.item?.playbackKey === nextItem.playbackKey) return;
 
     if (nextItem.mediaType === 'VIDEO') {
-      // Preload but don't autoplay
       loadVideoIntoSlot(preloadSlot, nextItem, null, false);
-    } else {
-      // Image preload: the <img> in the hidden slot will load naturally
-      stateRef.current = { item: nextItem, loaded: true };
+      return;
     }
-  }, [nextItem, preloadSlot, preloadRefs, loadVideoIntoSlot]);
 
-  // ── Detect index changes → swap slots ─────────────────────
+    stateRef.current = { item: nextItem, loaded: false, metadataReady: false, readyForPlayback: false };
+    notifyReady(nextItem, false);
+  }, [getSlotRefs, loadVideoIntoSlot, nextItem, notifyReady, preloadSlot]);
+
   React.useEffect(() => {
     if (prevIndexRef.current === currentIndex) return;
     prevIndexRef.current = currentIndex;
 
-    // The preload slot should have the new current item already loaded.
-    // If it does, just swap active/preload. Otherwise load fresh.
     const preloadState = preloadRefs.stateRef.current;
-
-    if (
-      preloadState.item?.assetId === currentItem?.assetId &&
-      preloadState.loaded
-    ) {
-      // Instant swap — zero black frame!
+    if (preloadState.item?.playbackKey === currentItem?.playbackKey && preloadState.readyForPlayback) {
       setActiveSlot(preloadSlot);
-
-      // Start playback on the now-active preloaded video
       if (currentItem?.mediaType === 'VIDEO') {
         const video = preloadRefs.videoRef.current;
         if (video) {
           void video.play().catch(() => { /* autoplay blocked */ });
         }
       }
-    } else if (currentItem) {
-      // Preload missed — load directly into current active slot
-      if (currentItem.mediaType === 'VIDEO') {
-        loadVideoIntoSlot(activeSlot, currentItem, startAtRef.current, true);
-        startAtRef.current = null;
-      }
+      return;
     }
-  }, [
-    currentIndex,
-    currentItem,
-    activeSlot,
-    preloadSlot,
-    preloadRefs,
-    loadVideoIntoSlot,
-  ]);
 
-  // ── Video event listeners on active slot ───────────────────
+    if (currentItem?.mediaType === 'VIDEO') {
+      loadVideoIntoSlot(activeSlot, currentItem, startAtRef.current, true);
+      startAtRef.current = null;
+    }
+  }, [activeSlot, currentIndex, currentItem, loadVideoIntoSlot, preloadRefs, preloadSlot]);
+
   React.useEffect(() => {
     const video = activeRefs.videoRef.current;
     if (!video || currentItem?.mediaType !== 'VIDEO') return;
@@ -315,7 +320,9 @@ export const DualMediaPlayer = React.memo(function DualMediaPlayer({
       }
     };
     const handleWaiting = () => {
-      if (video.paused) void video.play().catch(() => { /* ignore */ });
+      if (video.paused) {
+        void video.play().catch(() => { /* ignore */ });
+      }
     };
 
     video.addEventListener('play', handlePlay);
@@ -333,25 +340,24 @@ export const DualMediaPlayer = React.memo(function DualMediaPlayer({
       video.removeEventListener('waiting', handleWaiting);
       document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [activeSlot, activeRefs, currentItem?.mediaType, onPlay, onTimeUpdate, onEnded, onError]);
+  }, [activeRefs, currentItem?.mediaType, onEnded, onError, onPlay, onTimeUpdate]);
 
-  // ── Cleanup on unmount ─────────────────────────────────────
-  React.useEffect(() => {
-    return () => {
-      if (videoARef.current) cleanupVideo(videoARef.current, hlsARef.current);
-      if (videoBRef.current) cleanupVideo(videoBRef.current, hlsBRef.current);
-    };
+  const teardownAll = React.useCallback(() => {
+    cleanupARef.current?.();
+    cleanupBRef.current?.();
+    if (videoARef.current) cleanupVideo(videoARef.current, hlsARef.current);
+    if (videoBRef.current) cleanupVideo(videoBRef.current, hlsBRef.current);
   }, []);
 
-  // ── Render ─────────────────────────────────────────────────
+  React.useEffect(() => {
+    return teardownAll;
+  }, [teardownAll]);
+
   if (!currentItem) return null;
 
-  const renderSlot = (
-    slot: 'A' | 'B',
-    item: PlaylistItem | null,
-    isActive: boolean,
-  ) => {
+  const renderSlot = (slot: 'A' | 'B', item: PlaylistItem | null, isActive: boolean) => {
     const videoRef = slot === 'A' ? videoARef : videoBRef;
+    const stateRef = slot === 'A' ? slotAStateRef : slotBStateRef;
 
     return (
       <div
@@ -368,6 +374,16 @@ export const DualMediaPlayer = React.memo(function DualMediaPlayer({
             src={item.url}
             alt="Mídia da campanha"
             className="h-screen w-screen object-contain"
+            onLoad={() => {
+              stateRef.current = { item, loaded: true, metadataReady: true, readyForPlayback: true };
+              updateWarmState(slot, item, true);
+            }}
+            onError={() => {
+              updateWarmState(slot, item, false);
+              if (isActive) {
+                onError();
+              }
+            }}
           />
         ) : (
           <video
@@ -391,9 +407,8 @@ export const DualMediaPlayer = React.memo(function DualMediaPlayer({
       {renderSlot('A', activeSlot === 'A' ? currentItem : nextItem, activeSlot === 'A')}
       {renderSlot('B', activeSlot === 'B' ? currentItem : nextItem, activeSlot === 'B')}
 
-      {/* Buffer bar on the active video */}
       {currentItem.mediaType === 'VIDEO' && (
-        <BufferBar videoRef={activeRefs.videoRef as React.RefObject<HTMLVideoElement>} />
+        <BufferBar videoRef={videoElRef as React.RefObject<HTMLVideoElement>} />
       )}
     </>
   );

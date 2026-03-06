@@ -58,6 +58,50 @@ type PlaybackItem = {
   url: string;
 };
 
+type DeviceManifestSchemaVersion = 'v1' | 'v2';
+type AssetPublicationState = 'PROCESSING' | 'READY' | 'READY_WITH_WARNINGS' | 'REJECTED';
+type PlaybackVariantDelivery = 'MP4' | 'HLS' | 'IMAGE';
+
+type PlaybackVariant = {
+  id: string;
+  url: string;
+  delivery: PlaybackVariantDelivery;
+  mimeType: string | null;
+  width: number | null;
+  height: number | null;
+  bitrateKbps: number | null;
+  hash: string | null;
+  sizeBytes: number | null;
+  codec: string | null;
+  isDefault: boolean;
+};
+
+type ResolvedPlaybackTimelineItem = {
+  assetId: string;
+  campaignId?: string;
+  mediaType: 'IMAGE' | 'VIDEO';
+  durationMs: number;
+  validFrom: string | null;
+  validUntil: string | null;
+  assetState: AssetPublicationState;
+  expectedLocalKey: string | null;
+  hash: string | null;
+  sizeBytes: number | null;
+  fallbackAssetId: string | null;
+  variants: PlaybackVariant[];
+};
+
+type PlaybackManifestPayload = {
+  manifestSchemaVersion: DeviceManifestSchemaVersion;
+  manifestVersion: string | null;
+  scheduleId: string | null;
+  resolvedAt: string;
+  validFrom: string | null;
+  validUntil: string | null;
+  items: PlaybackItem[];
+  timeline: ResolvedPlaybackTimelineItem[];
+};
+
 @Injectable()
 export class DevicesService {
   private readonly statusEvents$ = new Subject<{
@@ -152,6 +196,140 @@ export class DevicesService {
       return `${apiUrl}/v1/hls/${media.id}/master.m3u8`;
     }
     return this.buildSignedUrl(media.storageKey);
+  }
+
+  private resolveAssetPublicationState(params: {
+    uploadStatus: string;
+    hlsStatus?: string | null;
+  }): AssetPublicationState {
+    if (params.uploadStatus === 'FAILED') return 'REJECTED';
+    if (params.uploadStatus !== 'READY') return 'PROCESSING';
+    if (params.hlsStatus === 'FAILED') return 'READY_WITH_WARNINGS';
+    return 'READY';
+  }
+
+  private async buildPlaybackVariants(media: {
+    id: string;
+    mediaType: 'IMAGE' | 'VIDEO';
+    mimeType: string;
+    width: number | null;
+    height: number | null;
+    fileSize: number;
+    hash: string | null;
+    storageKey: string;
+    hlsStatus: string | null;
+  }): Promise<PlaybackVariant[]> {
+    const variants: PlaybackVariant[] = [];
+    const directUrl = await this.buildSignedUrl(media.storageKey);
+
+    if (directUrl) {
+      variants.push({
+        id: `${media.id}:${media.mediaType === 'VIDEO' ? 'mp4' : 'image'}`,
+        url: directUrl,
+        delivery: media.mediaType === 'VIDEO' ? 'MP4' : 'IMAGE',
+        mimeType: media.mimeType,
+        width: media.width,
+        height: media.height,
+        bitrateKbps: null,
+        hash: media.hash,
+        sizeBytes: media.fileSize,
+        codec: null,
+        isDefault: true,
+      });
+    }
+
+    if (media.mediaType === 'VIDEO' && media.hlsStatus === 'READY') {
+      const hlsUrl = await this.buildPlaybackUrl({
+        storageKey: media.storageKey,
+        hlsStatus: media.hlsStatus,
+        id: media.id,
+      });
+
+      if (hlsUrl) {
+        variants.push({
+          id: `${media.id}:hls`,
+          url: hlsUrl,
+          delivery: 'HLS',
+          mimeType: 'application/vnd.apple.mpegurl',
+          width: media.width,
+          height: media.height,
+          bitrateKbps: null,
+          hash: media.hash,
+          sizeBytes: media.fileSize,
+          codec: null,
+          isDefault: !directUrl,
+        });
+      }
+    }
+
+    return variants;
+  }
+
+  private async buildResolvedTimelineItem(params: {
+    assetId: string;
+    campaignId?: string;
+    mediaType: 'IMAGE' | 'VIDEO';
+    durationMs: number;
+    validFrom?: Date | null;
+    validUntil?: Date | null;
+    media: {
+      id: string;
+      mimeType: string;
+      width: number | null;
+      height: number | null;
+      fileSize: number;
+      hash: string | null;
+      storageKey: string;
+      uploadStatus: string;
+      hlsStatus: string | null;
+      mediaType: 'IMAGE' | 'VIDEO';
+    };
+  }): Promise<{ legacy: PlaybackItem; timeline: ResolvedPlaybackTimelineItem } | null> {
+    const assetState = this.resolveAssetPublicationState({
+      uploadStatus: params.media.uploadStatus,
+      hlsStatus: params.media.hlsStatus,
+    });
+
+    const variants = await this.buildPlaybackVariants(params.media);
+    const defaultVariant = variants.find((variant) => variant.isDefault) ?? variants[0] ?? null;
+    if (!defaultVariant) return null;
+
+    return {
+      legacy: {
+        assetId: params.assetId,
+        campaignId: params.campaignId,
+        mediaType: params.mediaType,
+        durationMs: params.durationMs,
+        url: defaultVariant.url,
+      },
+      timeline: {
+        assetId: params.assetId,
+        campaignId: params.campaignId,
+        mediaType: params.mediaType,
+        durationMs: params.durationMs,
+        validFrom: params.validFrom?.toISOString() ?? null,
+        validUntil: params.validUntil?.toISOString() ?? null,
+        assetState,
+        expectedLocalKey: `${params.assetId}:${defaultVariant.id}`,
+        hash: params.media.hash,
+        sizeBytes: params.media.fileSize,
+        fallbackAssetId: null,
+        variants,
+      },
+    };
+  }
+
+  private buildEmptyManifest(manifestSchemaVersion: DeviceManifestSchemaVersion = 'v2'): PlaybackManifestPayload {
+    return {
+      manifestSchemaVersion,
+      manifestVersion: null,
+      scheduleId: null,
+      resolvedAt: new Date().toISOString(),
+      validFrom: null,
+      validUntil: null,
+      items: [],
+      timeline: [],
+    };
   }
 
   streamWorkspaceEvents(workspaceId: string): Observable<MessageEvent> {
@@ -613,8 +791,14 @@ export class DevicesService {
     };
   }
 
-  async getPlaybackManifestByToken(deviceToken: string) {
+  async getPlaybackManifestByToken(
+    deviceToken: string,
+    supportedManifestSchemaVersions?: string[],
+  ) {
     const token = deviceToken.trim();
+    const manifestSchemaVersion: DeviceManifestSchemaVersion = supportedManifestSchemaVersions?.includes('v1') && !supportedManifestSchemaVersions?.includes('v2')
+      ? 'v1'
+      : 'v2';
 
     if (!token) {
       throw new BadRequestException({
@@ -642,15 +826,15 @@ export class DevicesService {
     if (device.operationalStatus !== 'ACTIVE') {
       return {
         success: true,
-        data: {
-          manifestVersion: null,
-          scheduleId: null,
-          items: [],
-        },
+        data: this.buildEmptyManifest(manifestSchemaVersion),
       };
     }
 
-    const occurrenceManifest = await this.buildOccurrenceManifest(device.workspaceId, device.id);
+    const occurrenceManifest = await this.buildOccurrenceManifest(
+      device.workspaceId,
+      device.id,
+      manifestSchemaVersion,
+    );
     if (occurrenceManifest) {
       return {
         success: true,
@@ -701,11 +885,7 @@ export class DevicesService {
     if (activeSchedules.length === 0) {
       return {
         success: true,
-        data: {
-          manifestVersion: null,
-          scheduleId: null,
-          items: [],
-        },
+        data: this.buildEmptyManifest(manifestSchemaVersion),
       };
     }
 
@@ -715,6 +895,7 @@ export class DevicesService {
       frequencyPerHour: number;
       updatedAt: Date;
       items: PlaybackItem[];
+      timeline: ResolvedPlaybackTimelineItem[];
     }> = [];
 
     for (const schedule of activeSchedules) {
@@ -728,63 +909,44 @@ export class DevicesService {
           campaignId: schedule.campaignId ?? undefined,
           mediaType: asset.media.mediaType,
           durationMs: asset.durationMs,
-          uploadStatus: asset.media.uploadStatus,
-          storageKey: asset.media.storageKey,
-          hlsStatus: asset.media.hlsStatus,
-          mediaId: asset.media.id,
+          media: asset.media,
         })) : [])
         : (schedule.playlist?.items ?? []).map((item) => ({
           assetId: item.id,
           campaignId: undefined,
           mediaType: item.media.mediaType,
           durationMs: item.durationMs,
-          uploadStatus: item.media.uploadStatus,
-          storageKey: item.media.storageKey,
-          hlsStatus: item.media.hlsStatus,
-          mediaId: item.media.id,
+          media: item.media,
         }));
 
-      const readyItems = itemsRaw.filter((item) => item.uploadStatus === 'READY');
-
-      const signedItems = (
+      const resolvedItems = (
         await Promise.all(
-          readyItems.map(async (item) => {
-            const url = await this.buildPlaybackUrl({
-              storageKey: item.storageKey,
-              hlsStatus: item.hlsStatus ?? null,
-              id: item.mediaId,
-            });
-            if (!url) return null;
-            return {
-              assetId: item.assetId,
-              campaignId: item.campaignId,
-              mediaType: item.mediaType,
-              durationMs: item.durationMs,
-              url,
-            } satisfies PlaybackItem;
-          }),
+          itemsRaw.map((item) => this.buildResolvedTimelineItem({
+            assetId: item.assetId,
+            campaignId: item.campaignId,
+            mediaType: item.mediaType,
+            durationMs: item.durationMs,
+            media: item.media,
+          })),
         )
       ).filter((item): item is NonNullable<typeof item> => item !== null);
 
-      if (signedItems.length === 0) continue;
+      if (resolvedItems.length === 0) continue;
 
       legacyEntries.push({
         key: schedule.id,
         scheduleId: schedule.id,
         frequencyPerHour: Math.max(1, schedule.frequencyPerHour),
         updatedAt: schedule.updatedAt,
-        items: signedItems,
+        items: resolvedItems.map((item) => item.legacy),
+        timeline: resolvedItems.map((item) => item.timeline),
       });
     }
 
     if (legacyEntries.length === 0) {
       return {
         success: true,
-        data: {
-          manifestVersion: null,
-          scheduleId: null,
-          items: [],
-        },
+        data: this.buildEmptyManifest(manifestSchemaVersion),
       };
     }
 
@@ -807,11 +969,7 @@ export class DevicesService {
     if (items.length === 0) {
       return {
         success: true,
-        data: {
-          manifestVersion: null,
-          scheduleId: null,
-          items: [],
-        },
+        data: this.buildEmptyManifest(manifestSchemaVersion),
       };
     }
 
@@ -823,9 +981,14 @@ export class DevicesService {
     return {
       success: true,
       data: {
+        manifestSchemaVersion,
         manifestVersion,
         scheduleId: primary.scheduleId,
+        resolvedAt: new Date().toISOString(),
+        validFrom: null,
+        validUntil: null,
         items,
+        timeline: legacyEntries.flatMap((entry) => entry.timeline),
       },
     };
   }
@@ -871,11 +1034,11 @@ export class DevicesService {
     return cycle;
   }
 
-  private async buildOccurrenceManifest(workspaceId: string, deviceId: string): Promise<{
-    manifestVersion: string | null;
-    scheduleId: string | null;
-    items: PlaybackItem[];
-  } | null> {
+  private async buildOccurrenceManifest(
+    workspaceId: string,
+    deviceId: string,
+    manifestSchemaVersion: DeviceManifestSchemaVersion,
+  ): Promise<PlaybackManifestPayload | null> {
     const now = new Date();
 
     const activeOccurrences = await this.db.scheduleOccurrence.findMany({
@@ -890,6 +1053,8 @@ export class DevicesService {
         id: true,
         campaignId: true,
         playsPerHour: true,
+        startAtUtc: true,
+        endAtUtc: true,
         campaign: {
           select: {
             id: true,
@@ -912,7 +1077,8 @@ export class DevicesService {
     const campaignMap = new Map<string, {
       campaignId: string;
       playsPerHour: number;
-      timeline: PlaybackItem[];
+      items: PlaybackItem[];
+      timeline: ResolvedPlaybackTimelineItem[];
     }>();
 
     for (const occ of activeOccurrences) {
@@ -925,40 +1091,30 @@ export class DevicesService {
         campaignId: campaign.id,
         mediaType: asset.media.mediaType,
         durationMs: asset.durationMs,
-        uploadStatus: asset.media.uploadStatus,
-        storageKey: asset.media.storageKey,
-        hlsStatus: asset.media.hlsStatus,
-        mediaId: asset.media.id,
+        media: asset.media,
       }));
 
-      const readyItems = timelineRaw.filter((item) => item.uploadStatus === 'READY');
-
-      const signedTimeline = (
+      const resolvedTimeline = (
         await Promise.all(
-          readyItems.map(async (item) => {
-            const url = await this.buildPlaybackUrl({
-              storageKey: item.storageKey,
-              hlsStatus: item.hlsStatus ?? null,
-              id: item.mediaId,
-            });
-            if (!url) return null;
-            return {
-              assetId: item.assetId,
-              campaignId: item.campaignId,
-              mediaType: item.mediaType,
-              durationMs: item.durationMs,
-              url,
-            } satisfies PlaybackItem;
-          }),
+          timelineRaw.map((item) => this.buildResolvedTimelineItem({
+            assetId: item.assetId,
+            campaignId: item.campaignId,
+            mediaType: item.mediaType,
+            durationMs: item.durationMs,
+            validFrom: occ.startAtUtc,
+            validUntil: occ.endAtUtc,
+            media: item.media,
+          })),
         )
       ).filter((item): item is NonNullable<typeof item> => item !== null);
 
-      if (signedTimeline.length === 0) continue;
+      if (resolvedTimeline.length === 0) continue;
 
       campaignMap.set(campaign.id, {
         campaignId: campaign.id,
         playsPerHour: occ.playsPerHour,
-        timeline: signedTimeline,
+        items: resolvedTimeline.map((item) => item.legacy),
+        timeline: resolvedTimeline.map((item) => item.timeline),
       });
     }
 
@@ -976,23 +1132,31 @@ export class DevicesService {
     }
 
     const items: PlaybackItem[] = [];
+    const timeline: ResolvedPlaybackTimelineItem[] = [];
 
     for (const campaignId of cycle) {
       const campaign = campaignMap.get(campaignId);
-      if (!campaign || campaign.timeline.length === 0) continue;
-      items.push(...campaign.timeline);
+      if (!campaign || campaign.items.length === 0) continue;
+      items.push(...campaign.items);
+      timeline.push(...campaign.timeline);
     }
 
-    if (items.length === 0) {
+    if (items.length === 0 || timeline.length === 0) {
       return null;
     }
 
     const manifestVersion = `occ:${activeOccurrences.map((o) => o.id).sort().join('|')}`;
+    const validUntil = new Date(Math.min(...activeOccurrences.map((occ) => occ.endAtUtc.getTime())));
 
     return {
+      manifestSchemaVersion,
       manifestVersion,
       scheduleId: null,
+      resolvedAt: now.toISOString(),
+      validFrom: now.toISOString(),
+      validUntil: validUntil.toISOString(),
       items,
+      timeline,
     };
   }
 
