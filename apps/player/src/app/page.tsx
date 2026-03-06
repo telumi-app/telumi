@@ -6,6 +6,7 @@ import { api, ApiRequestError, isOfflineMode, type DeviceManifestSchemaVersion }
 import { precacheAssets, detectCacheMode, getCacheMode } from '@/lib/media-cache';
 import { DualMediaPlayer } from '@/components/dual-media-player';
 import { PlaybackOverlay } from '@/components/playback-overlay';
+import { PlayerStartupScreen } from '@/components/player-startup-screen';
 import { detectDeviceProfile, type DeviceProfile } from '@/lib/device-profile';
 import {
   buildRuntimePlaybackItems,
@@ -87,6 +88,8 @@ export default function PlayerHome() {
   const [currentStartedAt, setCurrentStartedAt] = React.useState<string | null>(null);
   const [pendingAdvance, setPendingAdvance] = React.useState(false);
   const [nextReadyPlaybackKey, setNextReadyPlaybackKey] = React.useState<string | null>(null);
+  const [hasResolvedManifestOnce, setHasResolvedManifestOnce] = React.useState(false);
+  const [hasInitialPlaybackStarted, setHasInitialPlaybackStarted] = React.useState(false);
   const videoFallbackTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const videoCompletedKeyRef = React.useRef<string | null>(null);
   const restoreCurrentTimeRef = React.useRef<number | null>(null);
@@ -262,6 +265,8 @@ export default function PlayerHome() {
     setManifestVersion(null);
     setPendingAdvance(false);
     setNextReadyPlaybackKey(null);
+    setHasResolvedManifestOnce(false);
+    setHasInitialPlaybackStarted(false);
     if (message) {
       setErrorMsg(message);
     }
@@ -515,6 +520,10 @@ export default function PlayerHome() {
           clearPairing('A conexão desta tela expirou. Faça o pareamento novamente no painel.');
         }
         // best-effort polling
+      } finally {
+        if (!cancelled) {
+          setHasResolvedManifestOnce(true);
+        }
       }
     };
 
@@ -533,6 +542,19 @@ export default function PlayerHome() {
   const nextItem = playlistItems.length > 1
     ? playlistItems[(currentIndex + 1) % playlistItems.length]
     : null;
+
+  React.useEffect(() => {
+    if (!currentItem || hasInitialPlaybackStarted) return;
+    if (currentItem.mediaType !== 'IMAGE') return;
+
+    const timeoutId = setTimeout(() => {
+      setHasInitialPlaybackStarted(true);
+    }, 320);
+
+    return () => {
+      clearTimeout(timeoutId);
+    };
+  }, [currentItem, hasInitialPlaybackStarted]);
 
   const advanceToNextItem = React.useCallback(() => {
     if (playlistItems.length === 0) return;
@@ -688,6 +710,7 @@ export default function PlayerHome() {
   const handleVideoStart = React.useCallback(() => {
     const startedAt = new Date().toISOString();
     setCurrentStartedAt(startedAt);
+    setHasInitialPlaybackStarted(true);
 
     if (!currentItem || currentItem.mediaType !== 'VIDEO') return;
 
@@ -785,6 +808,14 @@ export default function PlayerHome() {
 
   // ── Tela pós-pareamento ─────────────────────────────────────────────
   if (paired) {
+    const startupStage: 'runtime' | 'manifest' | 'render' | null = !deviceProfile
+      ? 'runtime'
+      : !hasResolvedManifestOnce
+        ? 'manifest'
+        : currentItem && !hasInitialPlaybackStarted
+          ? 'render'
+          : null;
+
     if (currentItem) {
       return (
         <main className="relative min-h-screen overflow-hidden bg-black">
@@ -807,6 +838,30 @@ export default function PlayerHome() {
             currentIndex={currentIndex}
             totalItems={playlistItems.length}
             mediaType={currentItem.mediaType}
+            isOffline={isOfflineMode()}
+          />
+
+          {startupStage ? (
+            <PlayerStartupScreen
+              stage={startupStage}
+              deviceName={paired.name}
+              workspaceName={paired.workspaceName}
+              locationName={paired.locationName}
+              isOffline={isOfflineMode()}
+            />
+          ) : null}
+        </main>
+      );
+    }
+
+    if (startupStage === 'runtime' || startupStage === 'manifest') {
+      return (
+        <main className="relative min-h-screen overflow-hidden bg-black">
+          <PlayerStartupScreen
+            stage={startupStage}
+            deviceName={paired.name}
+            workspaceName={paired.workspaceName}
+            locationName={paired.locationName}
             isOffline={isOfflineMode()}
           />
         </main>

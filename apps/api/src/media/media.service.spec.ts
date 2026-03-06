@@ -252,9 +252,42 @@ describe('MediaService', () => {
       const result = await service.findAll(workspaceId);
 
       expect(result.data[0]!.publicationState).toBe('TRANSCODING');
-      expect(result.data[0]!.playbackReadiness).toBe('READY');
+      expect(result.data[0]!.playbackReadiness).toBe('READY_WITH_FALLBACK');
       expect(result.data[0]!.deliveryCandidates).toEqual([
-        { mode: 'MP4', ready: true, label: 'MP4 direto' },
+        { mode: 'MP4', ready: true, label: 'Fonte direta compatível' },
+        { mode: 'HLS', ready: false, label: 'HLS adaptativo' },
+      ]);
+    });
+
+    it('deve bloquear vídeo mov até a versão segura ficar pronta', async () => {
+      const now = new Date();
+      dbMock.media.findMany = vi.fn().mockResolvedValue([
+        {
+          id: 'media-3',
+          name: 'Outdoor Reel',
+          originalName: 'outdoor.mov',
+          mimeType: 'video/quicktime',
+          mediaType: 'VIDEO',
+          fileSize: 12 * 1024 * 1024,
+          durationMs: 20000,
+          width: 1920,
+          height: 1080,
+          hash: 'mov-hash',
+          storageKey: 'ws-1/media-3/outdoor.mov',
+          uploadStatus: 'READY',
+          hlsStatus: 'PROCESSING',
+          createdAt: now,
+          updatedAt: now,
+        },
+      ]);
+
+      const result = await service.findAll(workspaceId);
+
+      expect(result.data[0]!.publicationState).toBe('TRANSCODING');
+      expect(result.data[0]!.playbackReadiness).toBe('BLOCKED');
+      expect(result.data[0]!.url).toBeUndefined();
+      expect(result.data[0]!.deliveryCandidates).toEqual([
+        { mode: 'MP4', ready: false, label: 'Fonte direta compatível' },
         { mode: 'HLS', ready: false, label: 'HLS adaptativo' },
       ]);
     });

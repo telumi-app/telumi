@@ -14,6 +14,7 @@ import { Observable, Subject } from 'rxjs';
 import { filter, map } from 'rxjs/operators';
 
 import { DatabaseService } from '@/modules/database';
+import { canUseDirectPlaybackSource } from '@/media/playback-policy';
 import { STORAGE_PROVIDER, StorageProvider } from '@/media/storage/storage.interface';
 
 import { DeviceErrorCode } from './constants';
@@ -241,12 +242,20 @@ export class DevicesService {
   }
 
   private resolveAssetPublicationState(params: {
+    mediaType: 'IMAGE' | 'VIDEO';
     uploadStatus: string;
+    mimeType: string;
     hlsStatus?: string | null;
   }): AssetPublicationState {
     if (params.uploadStatus === 'FAILED') return 'REJECTED';
     if (params.uploadStatus !== 'READY') return 'PROCESSING';
-    if (params.hlsStatus === 'FAILED') return 'READY_WITH_WARNINGS';
+    if (params.mediaType !== 'VIDEO') return 'READY';
+    if (params.hlsStatus === 'FAILED') {
+      return canUseDirectPlaybackSource(params) ? 'READY_WITH_WARNINGS' : 'REJECTED';
+    }
+    if (params.hlsStatus !== 'READY' && !canUseDirectPlaybackSource(params)) {
+      return 'PROCESSING';
+    }
     return 'READY';
   }
 
@@ -262,7 +271,9 @@ export class DevicesService {
     hlsStatus: string | null;
   }): Promise<PlaybackVariant[]> {
     const variants: PlaybackVariant[] = [];
-    const directUrl = await this.buildSignedUrl(media.storageKey);
+    const directUrl = media.mediaType === 'IMAGE' || canUseDirectPlaybackSource(media)
+      ? await this.buildSignedUrl(media.storageKey)
+      : null;
 
     if (directUrl) {
       variants.push({
@@ -328,7 +339,9 @@ export class DevicesService {
     };
   }): Promise<{ legacy: PlaybackItem; timeline: ResolvedPlaybackTimelineItem } | null> {
     const assetState = this.resolveAssetPublicationState({
+      mediaType: params.media.mediaType,
       uploadStatus: params.media.uploadStatus,
+      mimeType: params.media.mimeType,
       hlsStatus: params.media.hlsStatus,
     });
 

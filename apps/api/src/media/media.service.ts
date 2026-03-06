@@ -18,6 +18,10 @@ import {
   isSupportedMimeType,
 } from './constants';
 import { RequestUploadUrlDto } from './dto/request-upload-url.dto';
+import {
+  canUseDirectPlaybackSource,
+  hasPlayableVideoVariant,
+} from './playback-policy';
 import { StorageProvider, STORAGE_PROVIDER } from './storage/storage.interface';
 import { TranscodeService } from './transcode';
 
@@ -35,19 +39,24 @@ export class MediaService {
 
   private resolvePublicationState(media: {
     mediaType: string;
+    mimeType: string;
     uploadStatus: string;
     hlsStatus?: string | null;
   }): 'UPLOADING' | 'TRANSCODING' | 'READY' | 'READY_WITH_WARNINGS' | 'FAILED' {
     if (media.uploadStatus === 'FAILED') return 'FAILED';
     if (media.uploadStatus !== 'READY') return 'UPLOADING';
     if (media.mediaType !== 'VIDEO') return 'READY';
-    if (media.hlsStatus === 'FAILED') return 'READY_WITH_WARNINGS';
+    if (media.hlsStatus === 'READY') return 'READY';
+    if (media.hlsStatus === 'FAILED') {
+      return canUseDirectPlaybackSource(media) ? 'READY_WITH_WARNINGS' : 'FAILED';
+    }
     if (!media.hlsStatus || this.TRANSCODE_PENDING_STATES.has(media.hlsStatus)) return 'TRANSCODING';
     return 'READY';
   }
 
   private buildDeliveryCandidates(media: {
     mediaType: string;
+    mimeType: string;
     uploadStatus: string;
     hlsStatus?: string | null;
   }): Array<{
@@ -66,8 +75,8 @@ export class MediaService {
     return [
       {
         mode: 'MP4',
-        ready: media.uploadStatus === 'READY',
-        label: 'MP4 direto',
+        ready: canUseDirectPlaybackSource(media),
+        label: 'Fonte direta compatível',
       },
       {
         mode: 'HLS',
@@ -81,11 +90,22 @@ export class MediaService {
     uploadStatus: string;
     hlsStatus?: string | null;
     mediaType: string;
+    mimeType: string;
   }): 'READY' | 'READY_WITH_FALLBACK' | 'BLOCKED' {
     if (media.uploadStatus !== 'READY') return 'BLOCKED';
     if (media.mediaType !== 'VIDEO') return 'READY';
-    if (media.hlsStatus === 'FAILED') return 'READY_WITH_FALLBACK';
-    return 'READY';
+    if (media.hlsStatus === 'READY') return 'READY';
+    if (canUseDirectPlaybackSource(media)) return 'READY_WITH_FALLBACK';
+    return 'BLOCKED';
+  }
+
+  private shouldExposePreviewUrl(media: {
+    mediaType: string;
+    mimeType: string;
+    uploadStatus: string;
+  }): boolean {
+    if (media.mediaType === 'IMAGE') return media.uploadStatus === 'READY';
+    return canUseDirectPlaybackSource(media);
   }
 
   /**
@@ -249,7 +269,9 @@ export class MediaService {
     // Gerar URLs presignadas para cada mídia
     const data = await Promise.all(
       media.map(async (m) => {
-        const url = await this.storage.presignedGetUrl(m.storageKey, PRESIGNED_GET_EXPIRY_SEC);
+        const url = this.shouldExposePreviewUrl(m)
+          ? await this.storage.presignedGetUrl(m.storageKey, PRESIGNED_GET_EXPIRY_SEC)
+          : undefined;
         return {
           ...this.mapMediaResponse(m),
           url,
@@ -272,7 +294,9 @@ export class MediaService {
       throw new NotFoundException('Mídia não encontrada.');
     }
 
-    const url = await this.storage.presignedGetUrl(media.storageKey, PRESIGNED_GET_EXPIRY_SEC);
+    const url = this.shouldExposePreviewUrl(media)
+      ? await this.storage.presignedGetUrl(media.storageKey, PRESIGNED_GET_EXPIRY_SEC)
+      : undefined;
 
     return {
       success: true,
@@ -374,7 +398,7 @@ export class MediaService {
         uploadStatus: media.uploadStatus,
         hlsStatus: media.hlsStatus ?? null,
         sourceReady: media.uploadStatus === 'READY',
-        adaptiveReady: media.mediaType === 'VIDEO' ? media.hlsStatus === 'READY' : null,
+        adaptiveReady: media.mediaType === 'VIDEO' ? hasPlayableVideoVariant(media) : null,
       },
       deliveryCandidates,
       createdAt: media.createdAt,

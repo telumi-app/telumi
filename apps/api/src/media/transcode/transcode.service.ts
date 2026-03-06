@@ -8,6 +8,7 @@ import { promisify } from 'util';
 
 import { DatabaseService } from '@/modules/database';
 import { STORAGE_PROVIDER, StorageProvider } from '@/media/storage/storage.interface';
+import { canUseDirectPlaybackSource } from '@/media/playback-policy';
 
 import {
   HLS_RENDITIONS,
@@ -162,14 +163,20 @@ export class TranscodeService {
    * the HLS manifest or fall back to direct mp4 URL.
    */
   resolvePlaybackUrl(media: {
+    mediaType: string;
+    mimeType: string;
     hlsStatus: string | null;
     hlsManifestKey: string | null;
+    uploadStatus: string;
     storageKey: string;
-  }): { type: 'hls' | 'direct'; key: string } {
+  }): { type: 'hls' | 'direct'; key: string } | null {
     if (media.hlsStatus === 'READY' && media.hlsManifestKey) {
       return { type: 'hls', key: media.hlsManifestKey };
     }
-    return { type: 'direct', key: media.storageKey };
+    if (media.mediaType !== 'VIDEO' || canUseDirectPlaybackSource(media)) {
+      return { type: 'direct', key: media.storageKey };
+    }
+    return null;
   }
 
   // ── FFmpeg args builder ──────────────────────────────────────────
@@ -226,6 +233,8 @@ export class TranscodeService {
       '-g', `${gopSize}`,
       '-keyint_min', `${gopSize}`,
       '-sc_threshold', '0',
+      '-pix_fmt', 'yuv420p',
+      '-scaler_flags', 'lanczos',
       '-f', 'hls',
       '-hls_time', `${HLS_SEGMENT_DURATION_SEC}`,
       '-hls_playlist_type', 'vod',

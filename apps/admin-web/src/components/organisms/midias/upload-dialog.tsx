@@ -26,23 +26,16 @@ import {
 import { Progress } from '@/components/ui/progress';
 import { mediaApi, uploadToPresignedUrl, type Media } from '@/lib/api/media';
 import { playlistsApi, type Playlist } from '@/lib/api/playlists';
+import { getMediaReadinessLabel, isMediaReadyForSelection } from '@/lib/media-readiness';
+import {
+  ACCEPT_STRING,
+  getFileExtension,
+  isImageMimeType,
+  isVideoMimeType,
+  normalizeMediaMimeType,
+  validateMediaUploadFile,
+} from '@/lib/media-upload';
 import { cn } from '@/lib/utils';
-
-const ALLOWED_MIME_TYPES = [
-  'image/jpeg',
-  'image/png',
-  'image/webp',
-  'image/gif',
-];
-
-const ALLOWED_EXTENSIONS = [
-  'jpg', 'jpeg', 'png', 'webp', 'gif',
-  'mp4', 'webm', 'mov', 'm4v', 'avi', 'mkv', 'wmv', 'flv', 'mpeg', 'mpg', '3gp',
-];
-const ACCEPT_STRING = `${ALLOWED_MIME_TYPES.join(',')},video/*,${ALLOWED_EXTENSIONS.map((ext) => `.${ext}`).join(',')}`;
-
-const MAX_IMAGE_SIZE = 50 * 1024 * 1024;
-const MAX_VIDEO_SIZE = 500 * 1024 * 1024;
 
 function formatPlaylistDuration(ms: number): string {
   const sec = Math.floor(ms / 1000);
@@ -53,44 +46,6 @@ function formatPlaylistDuration(ms: number): string {
   return `${sec}s`;
 }
 
-function isImageType(mimeType: string) {
-  return mimeType.startsWith('image/');
-}
-
-function isVideoType(mimeType: string) {
-  return mimeType.startsWith('video/');
-}
-
-function getFileExtension(fileName: string): string {
-  const match = fileName.toLowerCase().match(/\.([a-z0-9]+)$/);
-  return match?.[1] ?? '';
-}
-
-function normalizeMimeType(file: File): string {
-  if (file.type) return file.type.toLowerCase();
-
-  const ext = getFileExtension(file.name);
-  const byExtension: Record<string, string> = {
-    jpg: 'image/jpeg',
-    jpeg: 'image/jpeg',
-    png: 'image/png',
-    webp: 'image/webp',
-    gif: 'image/gif',
-    mp4: 'video/mp4',
-    webm: 'video/webm',
-    mov: 'video/quicktime',
-    m4v: 'video/x-m4v',
-    avi: 'video/x-msvideo',
-    mkv: 'video/x-matroska',
-    wmv: 'video/x-ms-wmv',
-    flv: 'video/x-flv',
-    mpeg: 'video/mpeg',
-    mpg: 'video/mpeg',
-    '3gp': 'video/3gpp',
-  };
-
-  return byExtension[ext] ?? '';
-}
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -103,9 +58,10 @@ type FileQueueItem = {
   file: File;
   mimeType: string;
   name: string;
-  status: 'waiting' | 'uploading' | 'confirming' | 'done' | 'error';
+  status: 'waiting' | 'uploading' | 'confirming' | 'processing' | 'done' | 'error';
   progress: number;
   error?: string;
+  mediaId?: string;
 };
 
 export type SelectedMedia = {
@@ -150,10 +106,15 @@ export function UploadDialog({
   const [selectedPlaylistId, setSelectedPlaylistId] = React.useState<string | null>(null);
   const [loadingPlaylistId, setLoadingPlaylistId] = React.useState<string | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const readinessTimersRef = React.useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   const hasFinished = queue.length > 0 && queue.every((f) => f.status === 'done' || f.status === 'error');
   const hasUploaded = queue.some((f) => f.status === 'done');
-  const allHistorySelected = history.length > 0 && selected.size === history.length;
+  const selectableHistory = React.useMemo(
+    () => history.filter((item) => isMediaReadyForSelection(item)),
+    [history],
+  );
+  const allHistorySelected = selectableHistory.length > 0 && selected.size === selectableHistory.length;
 
   React.useEffect(() => {
     if (!open) {
@@ -165,6 +126,8 @@ export function UploadDialog({
       setActiveTab('history');
       setPlaylists([]);
       setSelectedPlaylistId(null);
+      readinessTimersRef.current.forEach((timer) => clearTimeout(timer));
+      readinessTimersRef.current.clear();
     }
   }, [open]);
 
@@ -226,49 +189,28 @@ export function UploadDialog({
     await deleteMediaByIds(ids);
   };
 
+  const loadHistory = React.useCallback(async () => {
+    setHistoryLoading(true);
+    try {
+      const res = await mediaApi.list();
+      setHistory((res.data ?? []).slice(0, 12));
+    } catch {
+      setHistory([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
   React.useEffect(() => {
     if (!open) return;
-
-    const loadHistory = async () => {
-      setHistoryLoading(true);
-      try {
-        const res = await mediaApi.list();
-        setHistory((res.data ?? []).slice(0, 12));
-      } catch {
-        setHistory([]);
-      } finally {
-        setHistoryLoading(false);
-      }
-    };
-
     void loadHistory();
-  }, [open]);
-
-  const validateFile = (file: File, mimeType: string): string | null => {
-    const ext = getFileExtension(file.name);
-    const isSupportedImage = ALLOWED_MIME_TYPES.includes(mimeType);
-    const isSupportedVideo = isVideoType(mimeType);
-    const isSupportedByExt = ALLOWED_EXTENSIONS.includes(ext);
-
-    if (!isSupportedImage && !isSupportedVideo && !isSupportedByExt) {
-      return `Tipo "${mimeType || file.type || 'desconhecido'}" não suportado.`;
-    }
-
-    const maxSize = isImageType(mimeType) ? MAX_IMAGE_SIZE : MAX_VIDEO_SIZE;
-    if (file.size > maxSize) {
-      const maxMb = Math.round(maxSize / (1024 * 1024));
-      return `Arquivo excede ${maxMb} MB.`;
-    }
-
-    return null;
-  };
+  }, [loadHistory, open]);
 
   const addFiles = (files: FileList | File[]) => {
     const newItems: FileQueueItem[] = [];
 
     for (const file of Array.from(files)) {
-      const mimeType = normalizeMimeType(file);
-      const error = validateFile(file, mimeType);
+      const { mimeType, error } = validateMediaUploadFile(file);
       newItems.push({
         id: typeof crypto !== 'undefined' && 'randomUUID' in crypto
           ? crypto.randomUUID()
@@ -284,6 +226,79 @@ export function UploadDialog({
 
     setQueue((prev) => [...prev, ...newItems]);
   };
+
+  const scheduleMediaReadyCheck = React.useCallback((params: {
+    queueId: string;
+    mediaId: string;
+    attempt?: number;
+  }) => {
+    const { queueId, mediaId, attempt = 0 } = params;
+    const timer = setTimeout(async () => {
+      try {
+        const res = await mediaApi.get(mediaId);
+        const refreshed = res.data;
+        if (!refreshed) return;
+
+        if (refreshed.publicationState === 'FAILED') {
+          setQueue((prev) => prev.map((item) => (
+            item.id === queueId
+              ? { ...item, status: 'error', error: 'Falha ao converter vídeo para o padrão do player.' }
+              : item
+          )));
+          readinessTimersRef.current.delete(queueId);
+          return;
+        }
+
+        if (isMediaReadyForSelection(refreshed)) {
+          setQueue((prev) => prev.map((item) => (
+            item.id === queueId
+              ? { ...item, status: 'done', progress: 100, error: undefined }
+              : item
+          )));
+          setSelected((prev) => {
+            const next = multiple ? new Set(prev) : new Set<string>();
+            next.add(refreshed.id);
+            return next;
+          });
+          await loadHistory();
+          readinessTimersRef.current.delete(queueId);
+          return;
+        }
+
+        setQueue((prev) => prev.map((item) => (
+          item.id === queueId
+            ? { ...item, status: 'processing', progress: 100, error: undefined }
+            : item
+        )));
+
+        if (attempt >= 60) {
+          setQueue((prev) => prev.map((item) => (
+            item.id === queueId
+              ? { ...item, status: 'error', error: 'A conversão está demorando mais que o esperado.' }
+              : item
+          )));
+          readinessTimersRef.current.delete(queueId);
+          return;
+        }
+
+        scheduleMediaReadyCheck({ queueId, mediaId, attempt: attempt + 1 });
+      } catch {
+        if (attempt >= 60) {
+          setQueue((prev) => prev.map((item) => (
+            item.id === queueId
+              ? { ...item, status: 'error', error: 'Não foi possível acompanhar o preparo desta mídia.' }
+              : item
+          )));
+          readinessTimersRef.current.delete(queueId);
+          return;
+        }
+
+        scheduleMediaReadyCheck({ queueId, mediaId, attempt: attempt + 1 });
+      }
+    }, attempt === 0 ? 1800 : 3000);
+
+    readinessTimersRef.current.set(queueId, timer);
+  }, [loadHistory, multiple]);
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -352,23 +367,38 @@ export function UploadDialog({
         const confirmed = confirmRes.data;
 
         if (confirmed) {
-          uploadedFromBatch.push({
-            id: confirmed.id,
-            name: confirmed.name,
-            originalName: confirmed.originalName,
-            mimeType: confirmed.mimeType,
-            mediaType: confirmed.mediaType as 'IMAGE' | 'VIDEO',
-            fileSize: confirmed.fileSize,
-            durationMs: confirmed.durationMs,
-            width: confirmed.width,
-            height: confirmed.height,
-            url: confirmed.url,
-          });
+          if (isMediaReadyForSelection(confirmed)) {
+            uploadedFromBatch.push({
+              id: confirmed.id,
+              name: confirmed.name,
+              originalName: confirmed.originalName,
+              mimeType: confirmed.mimeType,
+              mediaType: confirmed.mediaType as 'IMAGE' | 'VIDEO',
+              fileSize: confirmed.fileSize,
+              durationMs: confirmed.durationMs,
+              width: confirmed.width,
+              height: confirmed.height,
+              url: confirmed.url,
+            });
+          }
         }
 
         setQueue((prev) =>
-          prev.map((f) => (f.id === item.id ? { ...f, status: 'done', progress: 100 } : f)),
+          prev.map((f) => {
+            if (f.id !== item.id) return f;
+
+            return {
+              ...f,
+              status: confirmed && !isMediaReadyForSelection(confirmed) ? 'processing' : 'done',
+              progress: 100,
+              mediaId: confirmed?.id,
+            };
+          }),
         );
+
+        if (confirmed && !isMediaReadyForSelection(confirmed)) {
+          scheduleMediaReadyCheck({ queueId: item.id, mediaId: confirmed.id });
+        }
       } catch (err) {
         setQueue((prev) =>
           prev.map((f) =>
@@ -386,12 +416,7 @@ export function UploadDialog({
 
     setIsProcessing(false);
 
-    try {
-      const res = await mediaApi.list();
-      setHistory((res.data ?? []).slice(0, 12));
-    } catch {
-      setHistory([]);
-    }
+    await loadHistory();
 
     if (uploadedFromBatch.length > 0) {
       // Auto-seleciona os itens enviados para o usuário confirmar sem fechar o modal
@@ -411,6 +436,11 @@ export function UploadDialog({
   }, [open, isProcessing, queue]);
 
   const toggleSelect = (id: string) => {
+    const media = history.find((item) => item.id === id);
+    if (media && !isMediaReadyForSelection(media)) {
+      return;
+    }
+
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(id)) {
@@ -464,7 +494,7 @@ export function UploadDialog({
     }
 
     const selectedMedia = history
-      .filter((item) => selected.has(item.id))
+      .filter((item) => selected.has(item.id) && isMediaReadyForSelection(item))
       .map((item) => ({
         id: item.id,
         name: item.name,
@@ -625,8 +655,8 @@ export function UploadDialog({
                       type="button"
                       size="sm"
                       variant="outline"
-                      onClick={() => setSelected(new Set(history.map((item) => item.id)))}
-                      disabled={history.length === 0 || isProcessing}
+                      onClick={() => setSelected(new Set(selectableHistory.map((item) => item.id)))}
+                      disabled={selectableHistory.length === 0 || isProcessing}
                     >
                       Selecionar tudo
                     </Button>
@@ -674,9 +704,12 @@ export function UploadDialog({
                 <div className="grid content-start grid-cols-2 gap-3 sm:grid-cols-3">
                   {history.map((item) => {
                     const isSelected = selected.has(item.id);
+                    const isReady = isMediaReadyForSelection(item);
+                    const readinessLabel = getMediaReadinessLabel(item);
                     const cardClassName = cn(
                       'group relative overflow-hidden rounded-xl border bg-background text-left transition',
-                      onSelect && 'hover:border-primary/50',
+                      onSelect && isReady && 'hover:border-primary/50',
+                      onSelect && !isReady && 'cursor-not-allowed border-amber-500/30 bg-amber-500/[0.03]',
                       isSelected && 'border-primary ring-1 ring-primary/40',
                     );
 
@@ -690,6 +723,7 @@ export function UploadDialog({
                               event.stopPropagation();
                               toggleSelect(item.id);
                             }}
+                            disabled={!isReady}
                             className={cn(
                               "absolute left-2 top-2 z-20 transition-opacity",
                               isSelected ? "opacity-100" : "opacity-0 group-hover:opacity-100"
@@ -734,6 +768,11 @@ export function UploadDialog({
                               <HugeiconsIcon icon={FileVideoIcon} size={18} className="text-muted-foreground" />
                             </div>
                           )}
+                          {!isReady && (
+                            <div className="absolute inset-x-2 bottom-2 rounded-md border border-amber-400/30 bg-black/75 px-2 py-1 text-[10px] font-medium text-amber-100 backdrop-blur-sm">
+                              {readinessLabel}
+                            </div>
+                          )}
                         </div>
                         <div className="flex h-10 items-start px-2.5 py-2">
                           <p title={item.name} className="truncate text-[11px] font-medium leading-tight text-foreground/90">{item.name}</p>
@@ -744,7 +783,7 @@ export function UploadDialog({
                     return (
                       <div
                         key={item.id}
-                        onClick={onSelect ? () => toggleSelect(item.id) : undefined}
+                        onClick={onSelect && isReady ? () => toggleSelect(item.id) : undefined}
                         onKeyDown={onSelect ? (event) => {
                           if (event.key === 'Enter' || event.key === ' ') {
                             event.preventDefault();
@@ -752,7 +791,7 @@ export function UploadDialog({
                           }
                         } : undefined}
                         role={onSelect ? 'button' : undefined}
-                        tabIndex={onSelect ? 0 : -1}
+                        tabIndex={onSelect && isReady ? 0 : -1}
                         className={cn(cardClassName, onSelect && 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60')}
                       >
                         {content}
@@ -773,7 +812,7 @@ export function UploadDialog({
                     <div key={item.id} className="flex items-center gap-3 rounded-md border p-2.5">
                       <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted">
                         <HugeiconsIcon
-                          icon={isImageType(item.mimeType) ? ImageIcon : FileVideoIcon}
+                          icon={isImageMimeType(item.mimeType) ? ImageIcon : FileVideoIcon}
                           size={16}
                           className="text-muted-foreground"
                         />
@@ -793,6 +832,7 @@ export function UploadDialog({
                           {item.status === 'waiting' && 'Aguardando envio'}
                           {item.status === 'uploading' && `${item.progress}% enviado`}
                           {item.status === 'confirming' && 'Confirmando upload...'}
+                          {item.status === 'processing' && 'Convertendo para o padrão do player...'}
                           {item.status === 'done' && (
                             <span className="inline-flex items-center gap-1 text-emerald-600">
                               <HugeiconsIcon icon={CheckmarkCircle01Icon} size={11} /> Enviado
@@ -813,7 +853,7 @@ export function UploadDialog({
                         </Button>
                       )}
 
-                      {(item.status === 'uploading' || item.status === 'confirming') && (
+                      {(item.status === 'uploading' || item.status === 'confirming' || item.status === 'processing') && (
                         <HugeiconsIcon icon={RefreshIcon} size={14} className="shrink-0 animate-spin text-muted-foreground" />
                       )}
                     </div>
@@ -857,7 +897,7 @@ export function UploadDialog({
                 <HugeiconsIcon icon={Upload04Icon} size={14} />
                 Selecionar arquivos
               </Button>
-              <p className="text-[11px] text-muted-foreground/70">JPG, PNG, WebP, GIF, MP4, WebM</p>
+              <p className="text-[11px] text-muted-foreground/70">JPG, PNG, WebP, GIF, MP4, WebM, MOV</p>
               <input
                 ref={fileInputRef}
                 type="file"
