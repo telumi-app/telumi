@@ -1,2 +1,3 @@
 [phases.setup]
+# Mantido em sincronia com a configuração raiz do monorepo.
 aptPkgs = ["ffmpeg"]
