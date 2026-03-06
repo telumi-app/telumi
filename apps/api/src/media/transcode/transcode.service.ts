@@ -21,11 +21,21 @@ import {
 
 const execFileAsync = promisify(execFile);
 
+type InputCapabilities = {
+  hasAudio: boolean;
+  width: number | null;
+  height: number | null;
+};
+
 /** Mime-type lookup for HLS output files */
 function hlsContentType(filename: string): string {
   if (filename.endsWith('.m3u8')) return 'application/vnd.apple.mpegurl';
   if (filename.endsWith('.ts')) return 'video/mp2t';
   return 'application/octet-stream';
+}
+
+function toEven(value: number): number {
+  return Math.max(2, Math.floor(value / 2) * 2);
 }
 
 /**
@@ -102,8 +112,20 @@ export class TranscodeService {
         `[Transcode] Source downloaded: ${(sourceStats.size / 1024 / 1024).toFixed(1)} MB`,
       );
 
+      const inputCapabilities = await this.probeInputCapabilities(inputPath);
+      this.logger.log(
+        `[Transcode] Input capabilities for ${mediaId}: hasAudio=${inputCapabilities.hasAudio}, width=${inputCapabilities.width ?? 'unknown'}, height=${inputCapabilities.height ?? 'unknown'}`,
+      );
+
       // 4. Run FFmpeg
-      const args = this.buildFfmpegArgs({ inputPath, outputDir, fps });
+      const args = this.buildFfmpegArgs({
+        inputPath,
+        outputDir,
+        fps,
+        hasAudio: inputCapabilities.hasAudio,
+        sourceWidth: inputCapabilities.width,
+        sourceHeight: inputCapabilities.height,
+      });
       this.logger.log(`[Transcode] Running FFmpeg with ${HLS_RENDITIONS.length} renditions`);
 
       const { stderr } = await execFileAsync('ffmpeg', args, {
@@ -136,6 +158,13 @@ export class TranscodeService {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(`[Transcode] ✗ Failed for media ${mediaId}: ${message}`);
+
+      if (error && typeof error === 'object' && 'stderr' in error) {
+        const stderr = typeof error.stderr === 'string' ? error.stderr : null;
+        if (stderr) {
+          this.logger.error(`[Transcode] FFmpeg stderr (last 1200 chars): ${stderr.slice(-1200)}`);
+        }
+      }
 
       try {
         await this.db.media.update({
@@ -188,8 +217,18 @@ export class TranscodeService {
     inputPath: string;
     outputDir: string;
     fps: number;
+    hasAudio: boolean;
+    sourceWidth: number | null;
+    sourceHeight: number | null;
   }): string[] {
-    const { inputPath, outputDir, fps } = input;
+    const {
+      inputPath,
+      outputDir,
+      fps,
+      hasAudio,
+      sourceWidth,
+      sourceHeight,
+    } = input;
     const gopSize = Math.round(fps * HLS_KEYFRAME_INTERVAL_SEC);
 
     const splitCount = HLS_RENDITIONS.length;
@@ -200,9 +239,17 @@ export class TranscodeService {
 
     const maps: string[] = [];
     const codecArgs: string[] = [];
+    const audioMaps: string[] = [];
+    const audioCodecArgs: string[] = [];
 
     HLS_RENDITIONS.forEach((r, i) => {
-      filterParts.push(`[v${i}]scale=w=${r.width}:h=-2[v${i}out]`);
+      const targetDimensions = sourceWidth !== null && sourceHeight !== null
+        ? this.resolveTargetDimensions(sourceWidth, sourceHeight, r.width)
+        : { width: r.width, height: -2 };
+
+      filterParts.push(
+        `[v${i}]scale=w=${targetDimensions.width}:h=${targetDimensions.height}[v${i}out]`,
+      );
       maps.push('-map', `[v${i}out]`);
       codecArgs.push(
         `-c:v:${i}`, 'libx264',
@@ -212,19 +259,27 @@ export class TranscodeService {
         '-preset', 'fast',
         `-profile:v:${i}`, 'main',
       );
+
+      if (hasAudio) {
+        audioMaps.push('-map', '0:a:0?');
+        audioCodecArgs.push(
+          `-c:a:${i}`, HLS_AUDIO.codec,
+          `-b:a:${i}`, `${HLS_AUDIO.bitrateKbps}k`,
+          `-ar:a:${i}`, `${HLS_AUDIO.sampleRate}`,
+        );
+      }
     });
 
-    const audioArgs = [
-      '-map', 'a:0?',
-      '-c:a', HLS_AUDIO.codec,
-      '-b:a', `${HLS_AUDIO.bitrateKbps}k`,
-      '-ar', `${HLS_AUDIO.sampleRate}`,
-    ];
+    const audioArgs = hasAudio ? [...audioMaps, ...audioCodecArgs] : [];
 
-    const varStreamMap = HLS_RENDITIONS.map((_, i) => `v:${i},a:0`).join(' ');
+    const varStreamMap = HLS_RENDITIONS
+      .map((_, i) => (hasAudio ? `v:${i},a:${i}` : `v:${i}`))
+      .join(' ');
 
     return [
       '-y',
+      '-hide_banner',
+      '-loglevel', 'error',
       '-i', inputPath,
       '-filter_complex', filterParts.join('; '),
       ...maps,
@@ -234,7 +289,7 @@ export class TranscodeService {
       '-keyint_min', `${gopSize}`,
       '-sc_threshold', '0',
       '-pix_fmt', 'yuv420p',
-      '-scaler_flags', 'lanczos',
+      '-sws_flags', 'lanczos',
       '-f', 'hls',
       '-hls_time', `${HLS_SEGMENT_DURATION_SEC}`,
       '-hls_playlist_type', 'vod',
@@ -244,6 +299,65 @@ export class TranscodeService {
       '-var_stream_map', varStreamMap,
       `${outputDir}/v%v/prog.m3u8`,
     ];
+  }
+
+  private resolveTargetDimensions(
+    sourceWidth: number,
+    sourceHeight: number,
+    targetLongEdge: number,
+  ): { width: number; height: number } {
+    const isPortrait = sourceHeight > sourceWidth;
+    const maxWidth = isPortrait ? sourceWidth : targetLongEdge;
+    const maxHeight = isPortrait ? targetLongEdge : sourceHeight;
+    const scaleFactor = Math.min(maxWidth / sourceWidth, maxHeight / sourceHeight, 1);
+
+    return {
+      width: toEven(sourceWidth * scaleFactor),
+      height: toEven(sourceHeight * scaleFactor),
+    };
+  }
+
+  private async probeInputCapabilities(inputPath: string): Promise<InputCapabilities> {
+    try {
+      const { stdout } = await execFileAsync(
+        'ffprobe',
+        [
+          '-v', 'error',
+          '-show_entries', 'stream=codec_type,width,height',
+          '-of', 'json',
+          inputPath,
+        ],
+        {
+          timeout: 30 * 1000,
+          maxBuffer: 1024 * 1024,
+        },
+      );
+
+      const parsed = JSON.parse(stdout) as {
+        streams?: Array<{
+          codec_type?: string;
+          width?: number;
+          height?: number;
+        }>;
+      };
+      const videoStream = parsed.streams?.find((stream) => stream.codec_type === 'video');
+      const hasAudio = parsed.streams?.some((stream) => stream.codec_type === 'audio') ?? false;
+
+      return {
+        hasAudio,
+        width: videoStream?.width ?? null,
+        height: videoStream?.height ?? null,
+      };
+    } catch (error) {
+      this.logger.warn(
+        `[Transcode] Could not probe input capabilities, falling back to audio-enabled pipeline: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return {
+        hasAudio: true,
+        width: null,
+        height: null,
+      };
+    }
   }
 
   // ── Helpers ──────────────────────────────────────────────────────
