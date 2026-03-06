@@ -50,6 +50,48 @@ function computeOperationalAlerts(status: ComputedDeviceStatus): string[] {
   return [];
 }
 
+type DeviceResolutionClass = 'AUTO' | 'SD' | 'HD' | 'FHD' | 'UHD';
+type DeviceCapabilityTier = 'ENTRY' | 'STANDARD' | 'SIGNAGE_PLUS';
+type DevicePlaybackReadiness = 'PENDING_PAIRING' | 'SYNCED' | 'DEGRADED' | 'RECOVERY_ONLY' | 'PAUSED';
+type DeviceHeartbeatWindow = 'UNKNOWN' | 'FRESH' | 'DELAYED' | 'STALE';
+
+type DeviceEventSummary = {
+  recentEvents7d: number;
+  warningEvents7d: number;
+  criticalEvents7d: number;
+  lastEventType: string | null;
+  lastEventSeverity: string | null;
+  lastEventAt: string | null;
+};
+
+function resolveResolutionClass(resolution: string): DeviceResolutionClass {
+  const normalized = resolution.trim().toUpperCase();
+  if (!normalized || normalized === 'AUTO') return 'AUTO';
+
+  const match = normalized.match(/(\d{3,4})\s*[X×]\s*(\d{3,4})/);
+  const largestSide = match
+    ? Math.max(Number(match[1] ?? 0), Number(match[2] ?? 0))
+    : Number(normalized.replace(/[^\d]/g, ''));
+
+  if (!largestSide || Number.isNaN(largestSide)) return 'AUTO';
+  if (largestSide >= 3840) return 'UHD';
+  if (largestSide >= 1920) return 'FHD';
+  if (largestSide >= 1280) return 'HD';
+  return 'SD';
+}
+
+function resolveCapabilityTier(params: {
+  resolution: string;
+  isPartnerTv?: boolean;
+}): DeviceCapabilityTier {
+  const resolutionClass = resolveResolutionClass(params.resolution);
+  if (params.isPartnerTv || resolutionClass === 'UHD' || resolutionClass === 'FHD') {
+    return 'SIGNAGE_PLUS';
+  }
+  if (resolutionClass === 'HD') return 'STANDARD';
+  return 'ENTRY';
+}
+
 type PlaybackItem = {
   assetId: string;
   campaignId?: string;
@@ -388,11 +430,41 @@ export class DevicesService {
       location?: { id: string; name: string };
     },
     fallbackLocationName?: string,
+    eventSummary?: DeviceEventSummary,
   ) {
     const status = computeDeviceStatus(device.pairedAt ?? null, device.lastHeartbeat ?? null);
     const lastHeartbeatAgeSeconds = device.lastHeartbeat
       ? Math.max(0, Math.floor((Date.now() - device.lastHeartbeat.getTime()) / 1000))
       : null;
+    const heartbeatWindow: DeviceHeartbeatWindow = lastHeartbeatAgeSeconds === null
+      ? 'UNKNOWN'
+      : lastHeartbeatAgeSeconds <= 90
+        ? 'FRESH'
+        : lastHeartbeatAgeSeconds <= 180
+          ? 'DELAYED'
+          : 'STALE';
+    const resolutionClass = resolveResolutionClass(device.resolution);
+    const capabilityTier = resolveCapabilityTier({
+      resolution: device.resolution,
+      isPartnerTv: device.isPartnerTv,
+    });
+    const playbackReadiness: DevicePlaybackReadiness = device.operationalStatus === 'INACTIVE'
+      ? 'PAUSED'
+      : !device.pairedAt
+        ? 'PENDING_PAIRING'
+        : status === 'ONLINE'
+          ? 'SYNCED'
+          : status === 'UNSTABLE'
+            ? 'DEGRADED'
+            : 'RECOVERY_ONLY';
+    const summary = eventSummary ?? {
+      recentEvents7d: 0,
+      warningEvents7d: 0,
+      criticalEvents7d: 0,
+      lastEventType: null,
+      lastEventSeverity: null,
+      lastEventAt: null,
+    };
 
     return {
       id: device.id,
@@ -414,8 +486,44 @@ export class DevicesService {
       operationalAlerts: computeOperationalAlerts(status),
       telemetry: {
         lastHeartbeatAgeSeconds,
+        heartbeatWindow,
+        cacheStrategy: 'OFFLINE_FIRST',
+        resolutionClass,
+        capabilityTier,
+        playbackReadiness,
+        recentEvents7d: summary.recentEvents7d,
+        warningEvents7d: summary.warningEvents7d,
+        criticalEvents7d: summary.criticalEvents7d,
+        lastEventType: summary.lastEventType,
+        lastEventSeverity: summary.lastEventSeverity,
+        lastEventAt: summary.lastEventAt,
       },
       createdAt: device.createdAt,
+    };
+  }
+
+  private summarizeDeviceEvents(events: Array<{
+    eventType: string;
+    severity: string;
+    occurredAt: Date;
+  }>): DeviceEventSummary {
+    let warningEvents7d = 0;
+    let criticalEvents7d = 0;
+
+    for (const event of events) {
+      if (event.severity === 'WARNING') warningEvents7d += 1;
+      if (event.severity === 'CRITICAL') criticalEvents7d += 1;
+    }
+
+    const lastEvent = events[0] ?? null;
+
+    return {
+      recentEvents7d: events.length,
+      warningEvents7d,
+      criticalEvents7d,
+      lastEventType: lastEvent?.eventType ?? null,
+      lastEventSeverity: lastEvent?.severity ?? null,
+      lastEventAt: lastEvent?.occurredAt.toISOString() ?? null,
     };
   }
 
@@ -428,9 +536,47 @@ export class DevicesService {
       orderBy: { createdAt: 'desc' },
     });
 
+    const deviceIds = devices.map((device) => device.id);
+    const recentEvents = deviceIds.length > 0
+      ? await this.db.deviceEvent.findMany({
+        where: {
+          deviceId: { in: deviceIds },
+          occurredAt: {
+            gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+          },
+        },
+        orderBy: { occurredAt: 'desc' },
+        select: {
+          deviceId: true,
+          eventType: true,
+          severity: true,
+          occurredAt: true,
+        },
+      })
+      : [];
+
+    const eventsByDevice = recentEvents.reduce<Map<string, Array<{
+      eventType: string;
+      severity: string;
+      occurredAt: Date;
+    }>>>((acc, event) => {
+      const current = acc.get(event.deviceId) ?? [];
+      current.push({
+        eventType: String(event.eventType),
+        severity: String(event.severity),
+        occurredAt: event.occurredAt,
+      });
+      acc.set(event.deviceId, current);
+      return acc;
+    }, new Map());
+
     return {
       success: true,
-      data: devices.map((device) => this.mapDeviceResponse(device)),
+      data: devices.map((device) => this.mapDeviceResponse(
+        device,
+        undefined,
+        this.summarizeDeviceEvents(eventsByDevice.get(device.id) ?? []),
+      )),
     };
   }
 

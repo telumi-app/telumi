@@ -39,6 +39,21 @@ import { devicesApi } from '@/lib/api/devices';
 import { locationsApi, type Location } from '@/lib/api/locations';
 import { type MeResponseData } from '@/lib/api/auth';
 
+const READINESS_CONFIG = {
+  PENDING_PAIRING: { label: 'Aguardando vínculo', tone: 'text-yellow-700 dark:text-yellow-300' },
+  SYNCED: { label: 'Manifesto sincronizado', tone: 'text-emerald-700 dark:text-emerald-300' },
+  DEGRADED: { label: 'Operando degradado', tone: 'text-amber-700 dark:text-amber-300' },
+  RECOVERY_ONLY: { label: 'Modo recuperação', tone: 'text-orange-700 dark:text-orange-300' },
+  PAUSED: { label: 'Operação pausada', tone: 'text-muted-foreground' },
+} as const;
+
+const HEARTBEAT_WINDOW_LABEL = {
+  UNKNOWN: 'Sem heartbeat',
+  FRESH: 'Heartbeat em dia',
+  DELAYED: 'Heartbeat atrasado',
+  STALE: 'Heartbeat expirado',
+} as const;
+
 const STATUS_CONFIG: Record<
   DeviceStatus,
   {
@@ -101,6 +116,9 @@ export function DeviceCard({ device, onUpdated, onDeleted, workspace }: DeviceCa
   const [isDeleting, setIsDeleting] = React.useState(false);
   const [deleteError, setDeleteError] = React.useState('');
   const statusConfig = STATUS_CONFIG[device.status];
+  const readinessConfig = device.telemetry?.playbackReadiness
+    ? READINESS_CONFIG[device.telemetry.playbackReadiness]
+    : null;
 
   React.useEffect(() => {
     if (!isEditOpen) {
@@ -192,6 +210,9 @@ export function DeviceCard({ device, onUpdated, onDeleted, workspace }: DeviceCa
   const isPairingExpired =
     device.pairingExpiresAt && new Date(device.pairingExpiresAt) < new Date();
   const canRepair = device.status === 'OFFLINE';
+  const recentEvents7d = device.telemetry?.recentEvents7d ?? 0;
+  const warningEvents7d = device.telemetry?.warningEvents7d ?? 0;
+  const criticalEvents7d = device.telemetry?.criticalEvents7d ?? 0;
 
   const handleSave = async () => {
     const trimmedName = name.trim();
@@ -313,6 +334,71 @@ export function DeviceCard({ device, onUpdated, onDeleted, workspace }: DeviceCa
                 {statusConfig.label}
               </Badge>
             </div>
+
+            {readinessConfig && (
+              <div className="rounded-xl border border-border/70 bg-muted/20 px-3 py-2.5">
+                <p className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+                  Runtime do player
+                </p>
+                <div className="mt-1.5 flex items-center justify-between gap-3">
+                  <p className={`text-sm font-medium ${readinessConfig.tone}`}>
+                    {readinessConfig.label}
+                  </p>
+                  <Badge variant="outline" className="text-[10px] uppercase tracking-[0.08em]">
+                    {device.telemetry?.cacheStrategy === 'OFFLINE_FIRST' ? 'offline-first' : 'sync'}
+                  </Badge>
+                </div>
+              </div>
+            )}
+
+            {device.status !== 'PENDING' && (
+              <div className="grid grid-cols-2 gap-2.5">
+                <div className="rounded-xl border border-border/70 bg-background/70 px-3 py-2.5">
+                  <p className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+                    Capacidade
+                  </p>
+                  <p className="mt-1 text-sm font-medium text-foreground">
+                    {device.telemetry?.capabilityTier ?? 'ENTRY'} · {device.telemetry?.resolutionClass ?? 'AUTO'}
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {HEARTBEAT_WINDOW_LABEL[device.telemetry?.heartbeatWindow ?? 'UNKNOWN']}
+                  </p>
+                </div>
+
+                <div className="rounded-xl border border-border/70 bg-background/70 px-3 py-2.5">
+                  <p className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+                    Incidentes 7d
+                  </p>
+                  <p className="mt-1 text-sm font-medium text-foreground">
+                    {recentEvents7d} evento{recentEvents7d === 1 ? '' : 's'}
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {criticalEvents7d} crítico{criticalEvents7d === 1 ? '' : 's'} · {warningEvents7d} alerta{warningEvents7d === 1 ? '' : 's'}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {device.telemetry?.lastEventType && (
+              <div className="rounded-xl border border-dashed border-border/80 bg-background/60 px-3 py-2.5">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+                      Último incidente
+                    </p>
+                    <p className="mt-1 text-sm font-medium text-foreground">
+                      {device.telemetry.lastEventType.replaceAll('_', ' ')}
+                    </p>
+                  </div>
+                  <Badge variant={device.telemetry.lastEventSeverity === 'CRITICAL' ? 'destructive' : 'outline'}>
+                    {device.telemetry.lastEventSeverity ?? 'INFO'}
+                  </Badge>
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {formatRelativeTime(device.telemetry.lastEventAt ?? null) ?? 'Sem registro recente'}
+                </p>
+              </div>
+            )}
           </div>
 
           {device.status === 'PENDING' && device.pairingCode && (

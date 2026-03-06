@@ -30,6 +30,18 @@ export default function TelasPage() {
   const [wizardInitialAction, setWizardInitialAction] = React.useState<WizardInitialAction>('create-screen');
   const [isWizardOpen, setIsWizardOpen] = React.useState(false);
   const { workspace, loading: workspaceLoading } = useWorkspace();
+  const metrics = React.useMemo(() => {
+    const pending = devices.filter((device) => device.status === 'PENDING').length;
+    const online = devices.filter((device) => device.status === 'ONLINE').length;
+    const attention = devices.filter(
+      (device) => device.status === 'UNSTABLE' || device.status === 'OFFLINE',
+    ).length;
+    const healthyRuntime = devices.filter(
+      (device) => device.telemetry?.playbackReadiness === 'SYNCED',
+    ).length;
+
+    return { pending, online, attention, healthyRuntime };
+  }, [devices]);
 
   const loadData = React.useCallback(async () => {
     const token = getSessionToken();
@@ -153,6 +165,31 @@ export default function TelasPage() {
       {view === 'empty' && (
         <div className="rounded-xl border border-dashed bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
           Adicione sua primeira tela para começar a exibir conteúdos no seu ambiente.
+        </div>
+      )}
+
+      {devices.length > 0 && (
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <Card className="rounded-2xl border-border/70 bg-card/80 p-4 shadow-none">
+            <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Online agora</p>
+            <p className="mt-3 text-3xl font-semibold tracking-tight text-foreground">{metrics.online}</p>
+            <p className="mt-1 text-sm text-muted-foreground">Telas com heartbeat fresco e manifesto ativo.</p>
+          </Card>
+          <Card className="rounded-2xl border-border/70 bg-card/80 p-4 shadow-none">
+            <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Pedem atenção</p>
+            <p className="mt-3 text-3xl font-semibold tracking-tight text-foreground">{metrics.attention}</p>
+            <p className="mt-1 text-sm text-muted-foreground">Conexões degradadas, offline ou em recuperação.</p>
+          </Card>
+          <Card className="rounded-2xl border-border/70 bg-card/80 p-4 shadow-none">
+            <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Prontas para playback</p>
+            <p className="mt-3 text-3xl font-semibold tracking-tight text-foreground">{metrics.healthyRuntime}</p>
+            <p className="mt-1 text-sm text-muted-foreground">Runtime sincronizado com cache offline-first.</p>
+          </Card>
+          <Card className="rounded-2xl border-border/70 bg-card/80 p-4 shadow-none">
+            <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Aguardando pareamento</p>
+            <p className="mt-3 text-3xl font-semibold tracking-tight text-foreground">{metrics.pending}</p>
+            <p className="mt-1 text-sm text-muted-foreground">Códigos ainda não vinculados ao player oficial.</p>
+          </Card>
         </div>
       )}
 

@@ -152,12 +152,14 @@ describe('MediaService', () => {
       dbMock.media.update = vi.fn().mockResolvedValue({
         ...media,
         uploadStatus: 'READY',
+        hlsStatus: null,
       });
 
       const result = await service.confirmUpload(workspaceId, 'media-1');
 
       expect(result.success).toBe(true);
       expect(result.data.uploadStatus).toBe('READY');
+      expect(result.data.publicationState).toBe('READY');
     });
 
     it('deve lançar 404 quando mídia não existe', async () => {
@@ -220,6 +222,41 @@ describe('MediaService', () => {
       expect(result.data).toHaveLength(1);
       expect(result.data[0]!.url).toBe('https://minio:9000/presigned-get');
       expect(result.data[0]!.name).toBe('Banner');
+      expect(result.data[0]!.publicationState).toBe('READY');
+    });
+
+    it('deve expor vídeo em transcoding enquanto HLS é preparado', async () => {
+      const now = new Date();
+      dbMock.media.findMany = vi.fn().mockResolvedValue([
+        {
+          id: 'media-2',
+          name: 'Lobby Loop',
+          originalName: 'loop.mp4',
+          mimeType: 'video/mp4',
+          mediaType: 'VIDEO',
+          fileSize: 8 * 1024 * 1024,
+          durationMs: 15000,
+          width: 1920,
+          height: 1080,
+          hash: 'abc',
+          storageKey: 'ws-1/media-2/loop.mp4',
+          uploadStatus: 'READY',
+          hlsStatus: 'PROCESSING',
+          createdAt: now,
+          updatedAt: now,
+        },
+      ]);
+
+      (storageMock.presignedGetUrl as ReturnType<typeof vi.fn>).mockResolvedValue('https://minio:9000/video');
+
+      const result = await service.findAll(workspaceId);
+
+      expect(result.data[0]!.publicationState).toBe('TRANSCODING');
+      expect(result.data[0]!.playbackReadiness).toBe('READY');
+      expect(result.data[0]!.deliveryCandidates).toEqual([
+        { mode: 'MP4', ready: true, label: 'MP4 direto' },
+        { mode: 'HLS', ready: false, label: 'HLS adaptativo' },
+      ]);
     });
   });
 

@@ -32,6 +32,17 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { mediaApi, type Media } from '@/lib/api/media';
 
+const PUBLICATION_BADGES: Record<NonNullable<Media['publicationState']>, {
+  label: string;
+  variant: 'default' | 'secondary' | 'outline' | 'destructive';
+}> = {
+  UPLOADING: { label: 'Enviando', variant: 'outline' },
+  TRANSCODING: { label: 'Preparando player', variant: 'secondary' },
+  READY: { label: 'Pronta', variant: 'default' },
+  READY_WITH_WARNINGS: { label: 'Pronta com fallback', variant: 'outline' },
+  FAILED: { label: 'Falhou', variant: 'destructive' },
+};
+
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -62,6 +73,9 @@ export function MediaCard({ media, onDeleted, onRenamed }: MediaCardProps) {
 
   const isImage = media.mediaType === 'IMAGE';
   const isVideo = media.mediaType === 'VIDEO';
+  const publicationBadge = media.publicationState
+    ? PUBLICATION_BADGES[media.publicationState]
+    : null;
 
   const handleRename = async () => {
     if (!newName.trim() || newName.trim() === media.name) {
@@ -167,12 +181,34 @@ export function MediaCard({ media, onDeleted, onRenamed }: MediaCardProps) {
           <p className="truncate text-sm font-medium leading-tight" title={media.name}>
             {media.name}
           </p>
+          <div className="flex flex-wrap items-center gap-2">
+            {publicationBadge && (
+              <Badge variant={publicationBadge.variant} className="text-[10px] uppercase tracking-[0.08em]">
+                {publicationBadge.label}
+              </Badge>
+            )}
+            {media.deliveryCandidates?.map((candidate) => (
+              <Badge
+                key={`${media.id}:${candidate.mode}`}
+                variant={candidate.ready ? 'outline' : 'secondary'}
+                className="text-[10px] uppercase tracking-[0.08em]"
+              >
+                {candidate.label}
+              </Badge>
+            ))}
+          </div>
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <span>{formatFileSize(media.fileSize)}</span>
             {media.width && media.height && (
               <>
                 <span>·</span>
                 <span>{media.width}×{media.height}</span>
+              </>
+            )}
+            {isVideo && media.processing?.hlsStatus && (
+              <>
+                <span>·</span>
+                <span>HLS {media.processing.hlsStatus.toLowerCase()}</span>
               </>
             )}
           </div>

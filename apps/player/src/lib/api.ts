@@ -383,15 +383,22 @@ export const api = {
         message?: string;
         metadata?: Record<string, unknown>;
         occurredAt: string;
-    }): Promise<void> {
+    }): Promise<{ success: boolean }> {
         try {
-            await fetchWithApiPrefixFallback('/devices/public/telemetry', {
+            const response = await fetchWithApiPrefixFallback('/devices/public/telemetry', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload),
             });
+
+            if (!response.ok) {
+                return { success: false };
+            }
+
+            const body = (await response.json()) as { success?: boolean };
+            return { success: Boolean(body.success) };
         } catch {
-            // Telemetry is best-effort — do not throw
+            return { success: false };
         }
     },
 

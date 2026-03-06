@@ -25,11 +25,68 @@ import { TranscodeService } from './transcode';
 export class MediaService {
   private readonly logger = new Logger(MediaService.name);
 
+  private readonly TRANSCODE_PENDING_STATES = new Set(['PENDING', 'PROCESSING']);
+
   constructor(
     private readonly db: DatabaseService,
     @Inject(STORAGE_PROVIDER) private readonly storage: StorageProvider,
     private readonly transcodeService: TranscodeService,
   ) {}
+
+  private resolvePublicationState(media: {
+    mediaType: string;
+    uploadStatus: string;
+    hlsStatus?: string | null;
+  }): 'UPLOADING' | 'TRANSCODING' | 'READY' | 'READY_WITH_WARNINGS' | 'FAILED' {
+    if (media.uploadStatus === 'FAILED') return 'FAILED';
+    if (media.uploadStatus !== 'READY') return 'UPLOADING';
+    if (media.mediaType !== 'VIDEO') return 'READY';
+    if (media.hlsStatus === 'FAILED') return 'READY_WITH_WARNINGS';
+    if (!media.hlsStatus || this.TRANSCODE_PENDING_STATES.has(media.hlsStatus)) return 'TRANSCODING';
+    return 'READY';
+  }
+
+  private buildDeliveryCandidates(media: {
+    mediaType: string;
+    uploadStatus: string;
+    hlsStatus?: string | null;
+  }): Array<{
+    mode: 'IMAGE' | 'MP4' | 'HLS';
+    ready: boolean;
+    label: string;
+  }> {
+    if (media.mediaType === 'IMAGE') {
+      return [{
+        mode: 'IMAGE',
+        ready: media.uploadStatus === 'READY',
+        label: 'Imagem original',
+      }];
+    }
+
+    return [
+      {
+        mode: 'MP4',
+        ready: media.uploadStatus === 'READY',
+        label: 'MP4 direto',
+      },
+      {
+        mode: 'HLS',
+        ready: media.hlsStatus === 'READY',
+        label: 'HLS adaptativo',
+      },
+    ];
+  }
+
+  private resolvePlaybackReadiness(media: {
+    uploadStatus: string;
+    hlsStatus?: string | null;
+    mediaType: string;
+  }): 'READY' | 'READY_WITH_FALLBACK' | 'BLOCKED' {
+    if (media.uploadStatus !== 'READY') return 'BLOCKED';
+    if (media.mediaType !== 'VIDEO') return 'READY';
+    if (media.hlsStatus === 'FAILED') return 'READY_WITH_FALLBACK';
+    return 'READY';
+  }
 
   /**
    * Resolve o tipo de mídia baseado no MIME type.
@@ -290,10 +347,15 @@ export class MediaService {
     width: number | null;
     height: number | null;
     hash: string | null;
+    hlsStatus?: string | null;
     uploadStatus: string;
     createdAt: Date;
     updatedAt: Date;
   }) {
+    const publicationState = this.resolvePublicationState(media);
+    const deliveryCandidates = this.buildDeliveryCandidates(media);
+    const playbackReadiness = this.resolvePlaybackReadiness(media);
+
     return {
       id: media.id,
       name: media.name,
@@ -306,6 +368,15 @@ export class MediaService {
       height: media.height,
       hash: media.hash,
       uploadStatus: media.uploadStatus,
+      publicationState,
+      playbackReadiness,
+      processing: {
+        uploadStatus: media.uploadStatus,
+        hlsStatus: media.hlsStatus ?? null,
+        sourceReady: media.uploadStatus === 'READY',
+        adaptiveReady: media.mediaType === 'VIDEO' ? media.hlsStatus === 'READY' : null,
+      },
+      deliveryCandidates,
       createdAt: media.createdAt,
       updatedAt: media.updatedAt,
     };

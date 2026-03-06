@@ -1,6 +1,6 @@
 # Telumi — Status de Implementação (Consolidado)
 
-**Última atualização:** 2026-03-03  
+**Última atualização:** 2026-03-06  
 **Escopo de execução atual:** INTERNAL (operação própria de rede indoor)
 
 ---
@@ -49,6 +49,7 @@
 | Stream em tempo real de status (SSE) | ✅ | `/devices/stream` |
 | Telemetria e PoP (play-event assinado) | ✅ | `/devices/public/telemetry`, `/devices/public/play-event` |
 | Repareamento e rotação de link de recuperação | ✅ | `/devices/:id/repair`, `getRecoveryLink` |
+| Diagnóstico operacional agregado por tela (heartbeat, readiness, incidentes 7d) | ✅ | `findAll` + `mapDeviceResponse` em `devices.service.ts` |
 
 ---
 
@@ -60,6 +61,8 @@
 | Listar, detalhar, renomear e remover mídia | ✅ | `apps/api/src/media` |
 | Página admin de gestão de mídias | ✅ | `apps/admin-web/src/app/(app)/midias/page.tsx` |
 | CRUD de playlists | ✅ | `apps/api/src/playlists/playlists.controller.ts` |
+| Estado editorial de publicação (`UPLOADING/TRANSCODING/READY/...`) | ✅ | `mapMediaResponse` em `media.service.ts` |
+| Sinalização de candidatos de entrega (imagem, MP4 direto, HLS) | ✅ | `deliveryCandidates` em `media.service.ts` |
 
 ---
 
@@ -83,11 +86,14 @@
 | Capacidade | Status | Evidência |
 |---|---|---|
 | Manifest por `deviceToken` com fallback legado | ✅ | `getPlaybackManifestByToken` |
+| Manifest versionado com negociação progressiva (`v2` com fallback `v1`) | ✅ | `devices-public.controller.ts` + `api.ts` |
 | Composição multi-campanha ponderada por `playsPerHour` | ✅ | `buildWeightedCampaignCycle` |
 | Expansão correta da timeline completa por campanha no manifesto | ✅ | `buildOccurrenceManifest` + path legado |
 | Priorização de occurrences ativas sobre schedules legados | ✅ | checagem `buildOccurrenceManifest` antes do fallback |
 | Polling de manifesto no player | ✅ | `MANIFEST_POLL_INTERVAL_MS` |
 | Avanço robusto de vídeo (watchdog/fallback + dedupe de completion) | ✅ | `videoFallbackTimeoutRef`, `videoCompletedKeyRef` |
+| Warm-up do próximo slot antes de swap | ✅ | `dual-media-player.tsx` + `nextReadyPlaybackKey` |
+| Filas persistidas offline para heartbeat, telemetria e PoP | ✅ | `HEARTBEAT_QUEUE_KEY`, `TELEMETRY_QUEUE_KEY`, `PLAY_EVENT_QUEUE_KEY` |
 
 ---
 
@@ -101,6 +107,7 @@
 | Edição de timeline e metadados da campanha | ✅ | integração com `CampaignTimeline` + `campaignsApi.update` |
 | Gestão de programações vinculadas dentro da edição | ✅ | listar/publicar/pausar/reativar/finalizar + criar nova |
 | Mitigação de hydration mismatch no menu de usuário | ✅ | gate por `mounted` em `components/nav-user.tsx` |
+| Painel operacional de telas com métricas e saúde do runtime | ✅ | `apps/admin-web/src/app/(app)/telas/page.tsx` + `device-card.tsx` |
 
 ---
 
@@ -141,7 +148,7 @@
 
 ## Resumo executivo do momento
 
-- O **core INTERNAL** está funcional de ponta a ponta: cadastro/pareamento de telas, upload de mídia, campanhas, programação, entrega via manifesto e reprodução no player.
-- A camada de **scheduling interno** já opera com validação de capacidade, hold temporário, confirmação e leitura por ocorrência ativa.
-- O admin já oferece **ciclo de vida completo de campanha** e **edição detalhada** com timeline e gestão de programações.
-- O backlog prioritário restante, conforme PRD, está concentrado em **marketplace + financeiro**.
+- O **core INTERNAL** segue funcional de ponta a ponta, agora com runtime mais previsível: manifesto versionado, timeline resolvida, aquecimento do próximo slot e fallback em camadas.
+- A camada de **offline-first do player** ficou mais resiliente com filas persistidas para heartbeat, telemetria e proof-of-play.
+- O admin passou a expor **saúde operacional por tela** e **maturidade de publicação de mídia**, reduzindo pontos cegos entre ingestão e reprodução.
+- O backlog prioritário restante, conforme PRD, permanece concentrado em **marketplace + financeiro** e no endurecimento final do pipeline de normalização/transcode.

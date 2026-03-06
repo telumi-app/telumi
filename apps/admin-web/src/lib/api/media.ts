@@ -17,6 +17,19 @@ export type Media = {
   height: number | null;
   hash: string | null;
   uploadStatus: UploadStatus;
+  publicationState?: 'UPLOADING' | 'TRANSCODING' | 'READY' | 'READY_WITH_WARNINGS' | 'FAILED';
+  playbackReadiness?: 'READY' | 'READY_WITH_FALLBACK' | 'BLOCKED';
+  processing?: {
+    uploadStatus: UploadStatus;
+    hlsStatus: 'PENDING' | 'PROCESSING' | 'READY' | 'FAILED' | null;
+    sourceReady: boolean;
+    adaptiveReady: boolean | null;
+  };
+  deliveryCandidates?: Array<{
+    mode: 'IMAGE' | 'MP4' | 'HLS';
+    ready: boolean;
+    label: string;
+  }>;
   url?: string;
   createdAt: string;
   updatedAt: string;

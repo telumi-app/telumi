@@ -106,6 +106,17 @@ export type Device = {
   operationalAlerts?: string[];
   telemetry?: {
     lastHeartbeatAgeSeconds: number | null;
+    heartbeatWindow?: 'UNKNOWN' | 'FRESH' | 'DELAYED' | 'STALE';
+    cacheStrategy?: 'OFFLINE_FIRST';
+    resolutionClass?: 'AUTO' | 'SD' | 'HD' | 'FHD' | 'UHD';
+    capabilityTier?: 'ENTRY' | 'STANDARD' | 'SIGNAGE_PLUS';
+    playbackReadiness?: 'PENDING_PAIRING' | 'SYNCED' | 'DEGRADED' | 'RECOVERY_ONLY' | 'PAUSED';
+    recentEvents7d?: number;
+    warningEvents7d?: number;
+    criticalEvents7d?: number;
+    lastEventType?: string | null;
+    lastEventSeverity?: string | null;
+    lastEventAt?: string | null;
   };
   createdAt: string;
 };

@@ -18,6 +18,8 @@ import { registerServiceWorker } from '@/lib/sw-register';
 import { getUptimeMs, PLAYER_VERSION } from '@/lib/boot-time';
 
 const HEARTBEAT_QUEUE_KEY = 'telumi:heartbeat-queue';
+const TELEMETRY_QUEUE_KEY = 'telumi:telemetry-queue';
+const PLAY_EVENT_QUEUE_KEY = 'telumi:play-event-queue';
 const DEVICE_TOKEN_KEY = 'deviceToken';
 const DEVICE_SECRET_KEY = 'deviceSecret';
 const PAIRED_DEVICE_KEY = 'telumi:paired-device';
@@ -40,6 +42,28 @@ type PersistedPlaybackState = {
   currentTimeSec?: number;
   manifestVersion?: string | null;
   updatedAt: string;
+};
+
+type QueuedTelemetryEvent = {
+  deviceToken: string;
+  eventType: string;
+  severity?: string;
+  message?: string;
+  metadata?: Record<string, unknown>;
+  occurredAt: string;
+};
+
+type QueuedPlayEvent = {
+  deviceToken: string;
+  playId: string;
+  campaignId?: string;
+  assetId?: string;
+  startedAt: string;
+  endedAt: string;
+  durationMs: number;
+  manifestVersion?: string;
+  assetHash?: string;
+  hmacSignature?: string;
 };
 
 function isTokenInvalidError(error: unknown): boolean {
@@ -101,43 +125,118 @@ export default function PlayerHome() {
     }
     localStorage.setItem(PLAYBACK_STATE_KEY, JSON.stringify(state));
   }, []);
-    const readHeartbeatQueue = () => {
-      try {
-        const raw = localStorage.getItem(HEARTBEAT_QUEUE_KEY);
-        if (!raw) return [] as Array<{ occurredAt: string }>;
-        const parsed = JSON.parse(raw) as Array<{ occurredAt: string }>;
-        return Array.isArray(parsed) ? parsed : [];
-      } catch {
-        return [] as Array<{ occurredAt: string }>;
-      }
-    };
+  const readJsonQueue = React.useCallback(<T,>(storageKey: string): T[] => {
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw) as T[];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }, []);
 
-    const writeHeartbeatQueue = (items: Array<{ occurredAt: string }>) => {
-      localStorage.setItem(HEARTBEAT_QUEUE_KEY, JSON.stringify(items.slice(-100)));
-    };
+  const writeJsonQueue = React.useCallback(<T,>(storageKey: string, items: T[], maxItems = 150) => {
+    localStorage.setItem(storageKey, JSON.stringify(items.slice(-maxItems)));
+  }, []);
 
-    const enqueueHeartbeat = (occurredAt: string) => {
-      const queue = readHeartbeatQueue();
-      queue.push({ occurredAt });
-      writeHeartbeatQueue(queue);
-    };
+  const readHeartbeatQueue = React.useCallback(
+    () => readJsonQueue<{ occurredAt: string }>(HEARTBEAT_QUEUE_KEY),
+    [readJsonQueue],
+  );
 
-    const flushHeartbeatQueue = async (deviceToken: string) => {
-      const queue = readHeartbeatQueue();
-      if (queue.length === 0) return;
+  const writeHeartbeatQueue = React.useCallback((items: Array<{ occurredAt: string }>) => {
+    writeJsonQueue(HEARTBEAT_QUEUE_KEY, items, 100);
+  }, [writeJsonQueue]);
 
-      const pending = [...queue];
-      while (pending.length > 0) {
-        const item = pending[0];
-        await api.sendHeartbeat({
-          deviceToken,
-          occurredAt: item.occurredAt,
-          playerStatus: 'PLAYING',
-        });
-        pending.shift();
-        writeHeartbeatQueue(pending);
-      }
-    };
+  const readTelemetryQueue = React.useCallback(
+    () => readJsonQueue<QueuedTelemetryEvent>(TELEMETRY_QUEUE_KEY),
+    [readJsonQueue],
+  );
+
+  const writeTelemetryQueue = React.useCallback((items: QueuedTelemetryEvent[]) => {
+    writeJsonQueue(TELEMETRY_QUEUE_KEY, items, 200);
+  }, [writeJsonQueue]);
+
+  const readPlayEventQueue = React.useCallback(
+    () => readJsonQueue<QueuedPlayEvent>(PLAY_EVENT_QUEUE_KEY),
+    [readJsonQueue],
+  );
+
+  const writePlayEventQueue = React.useCallback((items: QueuedPlayEvent[]) => {
+    writeJsonQueue(PLAY_EVENT_QUEUE_KEY, items, 200);
+  }, [writeJsonQueue]);
+
+  const enqueueHeartbeat = React.useCallback((occurredAt: string) => {
+    const queue = readHeartbeatQueue();
+    queue.push({ occurredAt });
+    writeHeartbeatQueue(queue);
+  }, [readHeartbeatQueue, writeHeartbeatQueue]);
+
+  const flushHeartbeatQueue = React.useCallback(async (deviceToken: string) => {
+    const queue = readHeartbeatQueue();
+    if (queue.length === 0) return;
+
+    const pending = [...queue];
+    while (pending.length > 0) {
+      const item = pending[0]!;
+      await api.sendHeartbeat({
+        deviceToken,
+        occurredAt: item.occurredAt,
+        playerStatus: 'PLAYING',
+      });
+      pending.shift();
+      writeHeartbeatQueue(pending);
+    }
+  }, [readHeartbeatQueue, writeHeartbeatQueue]);
+
+  const enqueueTelemetryEvent = React.useCallback((payload: QueuedTelemetryEvent) => {
+    const queue = readTelemetryQueue();
+    queue.push(payload);
+    writeTelemetryQueue(queue);
+  }, [readTelemetryQueue, writeTelemetryQueue]);
+
+  const flushTelemetryQueue = React.useCallback(async () => {
+    const queue = readTelemetryQueue();
+    if (queue.length === 0) return;
+
+    const pending = [...queue];
+    while (pending.length > 0) {
+      const item = pending[0]!;
+      const result = await api.sendTelemetryEvent(item);
+      if (!result.success) break;
+      pending.shift();
+      writeTelemetryQueue(pending);
+    }
+  }, [readTelemetryQueue, writeTelemetryQueue]);
+
+  const enqueuePlayEvent = React.useCallback((payload: QueuedPlayEvent) => {
+    const queue = readPlayEventQueue();
+    queue.push(payload);
+    writePlayEventQueue(queue);
+  }, [readPlayEventQueue, writePlayEventQueue]);
+
+  const flushPlayEventQueue = React.useCallback(async () => {
+    const queue = readPlayEventQueue();
+    if (queue.length === 0) return;
+
+    const pending = [...queue];
+    while (pending.length > 0) {
+      const item = pending[0]!;
+      const result = await api.sendPlayEvent(item);
+      if (!result.success) break;
+      pending.shift();
+      writePlayEventQueue(pending);
+    }
+  }, [readPlayEventQueue, writePlayEventQueue]);
+
+  const submitTelemetryEvent = React.useCallback(async (payload: QueuedTelemetryEvent) => {
+    const result = await api.sendTelemetryEvent(payload);
+    if (!result.success) {
+      enqueueTelemetryEvent(payload);
+    }
+    return result;
+  }, [enqueueTelemetryEvent]);
 
   const [isAutoPairing, setIsAutoPairing] = React.useState(true);
 
@@ -185,7 +284,7 @@ export default function PlayerHome() {
           device: result.data.device,
         });
         setPaired(result.data.device);
-        void api.sendTelemetryEvent({
+        void submitTelemetryEvent({
           deviceToken: result.data.deviceToken,
           eventType: 'PLAYER_STARTED',
           severity: 'INFO',
@@ -198,7 +297,7 @@ export default function PlayerHome() {
     } finally {
       setIsLoading(false);
     }
-  }, [code, persistPairing]);
+  }, [code, persistPairing, submitTelemetryEvent]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && code.length >= 6) {
@@ -238,7 +337,7 @@ export default function PlayerHome() {
           });
           setPaired(result.data.device);
           window.history.replaceState({}, '', '/');
-          void api.sendTelemetryEvent({
+          void submitTelemetryEvent({
             deviceToken: result.data.deviceToken,
             eventType: 'PLAYER_STARTED',
             severity: 'INFO',
@@ -261,7 +360,7 @@ export default function PlayerHome() {
     return () => {
       cancelled = true;
     };
-  }, [persistPairing]);
+  }, [persistPairing, submitTelemetryEvent]);
 
   React.useEffect(() => {
     if (paired) return;
@@ -298,6 +397,8 @@ export default function PlayerHome() {
       const occurredAt = new Date().toISOString();
 
       try {
+        await flushTelemetryQueue();
+        await flushPlayEventQueue();
         await flushHeartbeatQueue(deviceToken);
         await api.sendHeartbeat({
           deviceToken,
@@ -332,7 +433,7 @@ export default function PlayerHome() {
       cancelled = true;
       clearInterval(intervalId);
     };
-  }, [paired, playlistItems.length, manifestVersion]);
+  }, [paired, playlistItems.length, manifestVersion, clearPairing, enqueueHeartbeat, flushHeartbeatQueue, flushPlayEventQueue, flushTelemetryQueue]);
 
   React.useEffect(() => {
     if (!paired || !deviceProfile) return;
@@ -384,7 +485,7 @@ export default function PlayerHome() {
         const offlineNow = isOfflineMode();
         if (offlineNow !== previousOfflineModeRef.current) {
           previousOfflineModeRef.current = offlineNow;
-          void api.sendTelemetryEvent({
+          void submitTelemetryEvent({
             deviceToken,
             eventType: offlineNow ? 'NETWORK_DOWN' : 'NETWORK_RESTORED',
             severity: offlineNow ? 'WARNING' : 'INFO',
@@ -398,7 +499,7 @@ export default function PlayerHome() {
         }
 
         if (runtimeItems.length === 0) {
-          void api.sendTelemetryEvent({
+          void submitTelemetryEvent({
             deviceToken,
             eventType: 'NO_CONTENT_UPDATE',
             severity: 'WARNING',
@@ -426,7 +527,7 @@ export default function PlayerHome() {
       cancelled = true;
       clearInterval(intervalId);
     };
-  }, [paired, deviceProfile, clearPairing, readPlaybackState]);
+  }, [paired, deviceProfile, clearPairing, readPlaybackState, submitTelemetryEvent]);
 
   const currentItem = playlistItems.length > 0 ? playlistItems[currentIndex] : null;
   const nextItem = playlistItems.length > 1
@@ -471,7 +572,7 @@ export default function PlayerHome() {
       `${playId}:${startedAt}:${endedAt}:${durationMs}`,
     );
 
-    void api.sendPlayEvent({
+    const payload: QueuedPlayEvent = {
       deviceToken,
       playId,
       campaignId: item.campaignId,
@@ -482,8 +583,13 @@ export default function PlayerHome() {
       manifestVersion: manifestVersion ?? undefined,
       assetHash: item.assetHash ?? undefined,
       hmacSignature: signature,
-    });
-  }, [manifestVersion]);
+    };
+
+    const result = await api.sendPlayEvent(payload);
+    if (!result.success) {
+      enqueuePlayEvent(payload);
+    }
+  }, [enqueuePlayEvent, manifestVersion]);
 
   const switchCurrentItemToFallback = React.useCallback(() => {
     if (!currentItem?.fallbackUrl || currentItem.fallbackUrl === currentItem.url) {
@@ -505,7 +611,7 @@ export default function PlayerHome() {
 
     const deviceToken = localStorage.getItem(DEVICE_TOKEN_KEY);
     if (deviceToken) {
-      void api.sendTelemetryEvent({
+      void submitTelemetryEvent({
         deviceToken,
         eventType: 'DOWNLOAD_FAILED',
         severity: 'WARNING',
@@ -520,7 +626,7 @@ export default function PlayerHome() {
     }
 
     return true;
-  }, [currentIndex, currentItem, manifestSchemaVersion, manifestVersion]);
+  }, [currentIndex, currentItem, manifestSchemaVersion, manifestVersion, submitTelemetryEvent]);
 
   const completeCurrentVideo = React.useCallback(() => {
     if (!currentItem || currentItem.mediaType !== 'VIDEO') return;
